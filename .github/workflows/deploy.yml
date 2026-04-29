@@ -24,8 +24,17 @@ jobs:
         run: npm run build
 
       - name: Deploy to Vercel
-        uses: amondtech/vercel-action@v2
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: team_4Xw12qEIQVOIFLDnpPJzGIIK
-          vercel-project-id: prj_0s20WKMso051WD0qfRCZCPQff6bF
+        run: |
+          curl -s -X POST "https://api.vercel.com/v1/deployments" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "coding-plan-compare",
+              "gitSource": {
+                "repo": "SwannTes/coding-plan-compare",
+                "type": "github",
+                "ref": "main"
+              },
+              "projectId": "prj_0s20WKMso051WD0qfRCZCPQff6bF",
+              "teamId": "team_4Xw12qEIQVOIFLDnpPJzGIIK"
+            }'
