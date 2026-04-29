@@ -37,7 +37,7 @@ export const platforms: Platform[] = [
         note: "包季 ¥44/月",
         badge: "轻量级",
         badgeColor: "rgba(79,110,247,.15)",
-        features: ["GLM-5/4.7/4.6", "含 MCP 工具", "适合轻度使用"],
+        features: ["GLM-5.1/GLM-5/4.7/4.6", "含 MCP 工具", "适合轻度使用"],
       },
       {
         name: "Pro",
@@ -46,7 +46,7 @@ export const platforms: Platform[] = [
         note: "包季 ¥134/月",
         badge: "最受欢迎",
         badgeColor: "rgba(239,68,68,.15)",
-        features: ["GLM-5/4.7/4.6", "含 MCP 工具", "更高用量限制"],
+        features: ["GLM-5.1/GLM-5/4.7/4.6", "含 MCP 工具", "更高用量限制"],
       },
       {
         name: "Max",
@@ -55,11 +55,11 @@ export const platforms: Platform[] = [
         note: "包季 ¥422/月",
         badge: "量大管饱",
         badgeColor: "rgba(168,85,247,.15)",
-        features: ["GLM-5/4.7/4.6", "含 MCP 工具", "超高用量限制"],
+        features: ["GLM-5.1/GLM-5/4.7/4.6", "含 MCP 工具", "超高用量限制"],
       },
     ],
-    highlights: ["GLM-5 在 SWE-bench 表现优异", "套餐含 MCP 工具额度", "包季更优惠"],
-    models: ["GLM-5", "GLM-4.7", "GLM-4.6"],
+    highlights: ["GLM-5.1/GLM-5 在 SWE-bench 表现优异", "套餐含 MCP 工具额度", "包季更优惠"],
+    models: ["GLM-5.1", "GLM-5", "GLM-4.7", "GLM-4.6"],
   },
   {
     id: "minimax",
@@ -118,7 +118,7 @@ export const platforms: Platform[] = [
   {
     id: "kimi",
     name: "Kimi",
-    subtitle: "全面接入 K2.5，年付最高立省 ¥240",
+    subtitle: "全面接入 K2.6，限额扩容3倍，年付最高立省 ¥960",
     icon: "🌙",
     color: "#8B5CF6",
     url: "https://www.kimi.com/code?track_id=ae1fae7a-31fa-4bba-8bd1-cfc6cc58e0e3",
@@ -130,7 +130,7 @@ export const platforms: Platform[] = [
         note: "年付 ¥39/月（¥468/年）",
         badge: "基础",
         badgeColor: "rgba(139,92,246,.12)",
-        features: ["Kimi K2.5", "基础用量", "7天周期刷新"],
+        features: ["Kimi K2.6", "基础用量", "7天周期刷新"],
       },
       {
         name: "Moderato",
@@ -139,7 +139,7 @@ export const platforms: Platform[] = [
         note: "年付 ¥79/月（¥948/年）",
         badge: "推荐",
         badgeColor: "rgba(239,68,68,.15)",
-        features: ["Kimi K2.5", "更高用量", "7天周期刷新"],
+        features: ["Kimi K2.6", "更高用量", "7天周期刷新"],
       },
       {
         name: "Allegretto",
@@ -148,7 +148,7 @@ export const platforms: Platform[] = [
         note: "年付 ¥159/月（¥1908/年）",
         badge: "进阶",
         badgeColor: "rgba(168,85,247,.15)",
-        features: ["Kimi K2.5", "大量使用", "7天周期刷新"],
+        features: ["Kimi K2.6", "大量使用", "7天周期刷新"],
       },
       {
         name: "Allegro",
@@ -157,11 +157,11 @@ export const platforms: Platform[] = [
         note: "年付 ¥559/月（¥6708/年）",
         badge: "旗舰",
         badgeColor: "rgba(236,72,153,.15)",
-        features: ["Kimi K2.5", "超高用量", "7天周期刷新"],
+        features: ["Kimi K2.6", "超高用量", "7天周期刷新"],
       },
     ],
-    highlights: ["全面接入 K2.5", "4 档套餐灵活选择", "年付最高立省 ¥960"],
-    models: ["Kimi K2.5"],
+    highlights: ["全面接入 K2.6", "4 档套餐灵活选择", "年付最高立省 ¥960"],
+    models: ["Kimi K2.6"],
   },
   {
     id: "volcengine",
