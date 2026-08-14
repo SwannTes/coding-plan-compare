@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>深圳社康随访面板</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f0f2f5; padding: 24px; }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 6px; }
+  .status { font-size: 14px; margin-bottom: 18px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .dot.on { background: #52c41a; }
+  .dot.off { background: #ff4d4f; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-bottom: 18px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .card h3 { font-size: 16px; margin-bottom: 10px; }
+  .card .state { font-size: 12px; color: #888; margin-bottom: 10px; min-height: 16px; }
+  .card .state.running { color: #fa8c16; }
+  .card .param { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+  .card .param input { flex: 1; padding: 7px 10px; font-size: 14px; border: 1px solid #d9d9d9; border-radius: 6px; }
+  button { width: 100%; padding: 10px 0; font-size: 15px; border: none; border-radius: 6px;
+           background: #1677ff; color: #fff; cursor: pointer; }
+  button:hover:not(:disabled) { background: #4096ff; }
+  button:disabled { background: #91caff; cursor: not-allowed; }
+  button.stop { background: #ff4d4f; margin-top: 8px; }
+  button.stop:hover:not(:disabled) { background: #ff7875; }
+  .log-box { background: #1d1d1d; color: #d4d4d4; border-radius: 10px; padding: 14px;
+             font-family: Consolas, monospace; font-size: 13px; line-height: 1.6;
+             white-space: pre-wrap; word-break: break-all; min-height: 120px; max-height: 420px; overflow-y: auto; }
+  .tip { font-size: 12px; color: #999; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>深圳社康随访面板</h1>
+  <div class="status">
+    <span class="dot off" id="dot"></span><span id="statusText">正在检测本地服务…</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="log-box" id="log">运行输出会显示在这里。</div>
+  <div class="tip">按钮只在开着本地服务（button_service.py）的电脑上有效；使用前请先用「启动调试Chrome」打开系统并登录。</div>
+</div>
+
+<script>
+const API = "http://127.0.0.1:8765";
+const grid = document.getElementById("grid");
+const logBox = document.getElementById("log");
+const dot = document.getElementById("dot");
+const statusText = document.getElementById("statusText");
+let scripts = [];
+
+function log(text) {
+  const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  logBox.textContent = (logBox.textContent === "运行输出会显示在这里。" ? "" : logBox.textContent + "\n")
+    + `[${time}] ${text}`;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+async function refresh() {
+  try {
+    const resp = await fetch(API + "/api/status");
+    const data = await resp.json();
+    scripts = data.scripts;
+    dot.className = "dot on";
+    statusText.textContent = "本地服务在线";
+    render();
+  } catch (e) {
+    dot.className = "dot off";
+    statusText.textContent = "本地服务离线——请确认本机 button_service.py 已启动";
+    grid.innerHTML = "";
+  }
+}
+
+function render() {
+  // 重渲染前保存输入框内容（状态每 5 秒刷新一次，不能清掉用户正在输入的值）
+  const saved = {};
+  grid.querySelectorAll("input[data-script]").forEach(inp => {
+    saved[inp.dataset.script + "|" + inp.dataset.pkey] = inp.value;
+  });
+  grid.innerHTML = "";
+  for (const s of scripts) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const stateText = s.running ? "运行中…" : (s.exists ? "" : "脚本文件缺失");
+    card.innerHTML = `<h3>${s.name}</h3>
+      <div class="state ${s.running ? "running" : ""}">${stateText}</div>`;
+    const inputs = [];
+    for (const p of (s.params || [])) {
+      const row = document.createElement("div");
+      row.className = "param";
+      row.innerHTML = `<span>${p.label}</span>`;
+      const inp = document.createElement("input");
+      inp.placeholder = p.placeholder || "";
+      inp.dataset.script = s.key;
+      inp.dataset.pkey = p.key;
+      const old = saved[s.key + "|" + p.key];
+      if (old !== undefined) inp.value = old;
+      row.appendChild(inp);
+      card.appendChild(row);
+      inputs.push({ key: p.key, inp });
+    }
+    const btn = document.createElement("button");
+    btn.textContent = s.mode === "daemon" && s.running ? "已在运行" : "运行";
+    btn.disabled = !s.exists || s.running;
+    btn.onclick = () => runScript(s, btn, inputs);
+    card.appendChild(btn);
+    if (s.mode === "daemon" && s.running) {
+      const stopBtn = document.createElement("button");
+      stopBtn.textContent = "停止";
+      stopBtn.className = "stop";
+      stopBtn.onclick = () => stopScript(s, stopBtn);
+      card.appendChild(stopBtn);
+    }
+    grid.appendChild(card);
+  }
+}
+
+async function runScript(s, btn, inputs) {
+  btn.disabled = true;
+  btn.textContent = "运行中…";
+  // 面板输入的参数拼进查询串，服务会作为命令行参数传给脚本
+  let qs = "";
+  for (const { key, inp } of (inputs || [])) {
+    const v = inp.value.trim();
+    if (v) qs += (qs ? "&" : "?") + encodeURIComponent(key) + "=" + encodeURIComponent(v);
+  }
+  log(`开始运行「${s.name}」…`);
+  try {
+    const resp = await fetch(API + "/api/run/" + s.key + qs, { method: "POST" });
+    const data = await resp.json();
+    if (data.output) log(`「${s.name}」输出：\n${data.output}`);
+    log(`「${s.name}」${data.ok ? "执行完成 ✓" : "未完全成功：" + (data.error || "见上方输出")}`);
+    if (data.message) log(`「${s.name}」${data.message}`);
+  } catch (e) {
+    log(`「${s.name}」请求失败：${e.message}（本地服务是否还在运行？）`);
+  }
+  refresh();
+}
+
+async function stopScript(s, btn) {
+  btn.disabled = true;
+  try {
+    const resp = await fetch(API + "/api/stop/" + s.key, { method: "POST" });
+    const data = await resp.json();
+    log(`「${s.name}」${data.message || data.error || ""}`);
+  } catch (e) {
+    log(`「${s.name}」停止请求失败：${e.message}`);
+  }
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

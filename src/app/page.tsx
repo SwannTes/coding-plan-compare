@@ -37,7 +37,7 @@ export default function Home() {
           </div>
           <div className="flex flex-wrap justify-center gap-8 text-center">
             <div className="hero-stat">
-              <div className="text-4xl font-bold text-white">7</div>
+              <div className="text-4xl font-bold text-white">8</div>
               <div className="text-sm text-gray-400 mt-1">平台对比</div>
             </div>
             <div className="hero-stat">
@@ -385,7 +385,7 @@ export default function Home() {
         <div className="max-w-6xl mx-auto px-4 py-8">
           <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
             <div className="text-sm text-gray-500">
-              数据更新于 2026 年 4 月，价格以各平台官网为准
+              数据更新于 2026 年 8 月，价格以各平台官网为准
             </div>
             <div className="flex items-center gap-4 text-sm text-gray-500">
               <span>
@@ -405,6 +405,15 @@ export default function Home() {
                   className="text-blue-400 hover:underline"
                 >
                   codingplan.org
+                </a>
+              </span>
+              <span>·</span>
+              <span>
+                <a
+                  href="/shenzhenshekang/"
+                  className="text-blue-400 hover:underline"
+                >
+                  深圳社康随访面板
                 </a>
               </span>
             </div>
