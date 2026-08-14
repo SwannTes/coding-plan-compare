@@ -13,7 +13,7 @@ export default function Home() {
     },
     {
       q: "哪个平台性价比最高？",
-      a: "入门体验推荐 MiniMax Starter（¥29/月）或火山引擎/阿里云的首月特惠（低至 ¥7.9）。看重模型多样性选火山引擎方舟，看重 MCP 工具选智谱 GLM（含在套餐内，有月度额度限制）。",
+      a: "入门体验推荐腾讯云 Lite 或小米 MiMo Lite（均 ¥39/月），MiniMax Plus（¥49/月）也值得考虑。看重模型多样性选火山引擎方舟，看重 MCP 工具选智谱 GLM。注意：Kimi 目前暂停新用户订阅，阿里云仅剩 Pro 档（¥200/月）。",
     },
     {
       q: "可以退款吗？",
@@ -41,15 +41,15 @@ export default function Home() {
               <div className="text-sm text-gray-400 mt-1">平台对比</div>
             </div>
             <div className="hero-stat">
-              <div className="text-4xl font-bold text-green-400">¥7.9</div>
-              <div className="text-sm text-gray-400 mt-1">最低首月价</div>
+              <div className="text-4xl font-bold text-green-400">¥39</div>
+              <div className="text-sm text-gray-400 mt-1">最低入门价</div>
             </div>
             <div className="hero-stat">
-              <div className="text-4xl font-bold text-blue-400">10+</div>
+              <div className="text-4xl font-bold text-blue-400">30+</div>
               <div className="text-sm text-gray-400 mt-1">可选模型</div>
             </div>
             <div className="hero-stat">
-              <div className="text-4xl font-bold text-purple-400">30+</div>
+              <div className="text-4xl font-bold text-purple-400">20+</div>
               <div className="text-sm text-gray-400 mt-1">套餐档位</div>
             </div>
           </div>
