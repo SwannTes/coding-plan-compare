@@ -388,34 +388,12 @@ export default function Home() {
               数据更新于 2026 年 8 月，价格以各平台官网为准
             </div>
             <div className="flex items-center gap-4 text-sm text-gray-500">
-              <span>
-                Powered by{" "}
-                <a
-                  href="https://github.com/anthropics/claude-code"
-                  className="text-blue-400 hover:underline"
-                >
-                  Claude Code
-                </a>
-              </span>
-              <span>·</span>
-              <span>
-                参考{" "}
-                <a
-                  href="https://codingplan.org"
-                  className="text-blue-400 hover:underline"
-                >
-                  codingplan.org
-                </a>
-              </span>
-              <span>·</span>
-              <span>
-                <a
-                  href="/shenzhenshekang/"
-                  className="text-blue-400 hover:underline"
-                >
-                  深圳社康随访面板
-                </a>
-              </span>
+              <a
+                href="/shenzhenshekang"
+                className="text-blue-400 hover:underline"
+              >
+                深圳社康随访面板
+              </a>
             </div>
           </div>
         </div>
