@@ -448,7 +448,7 @@ async def main_async():
                     log(f"还剩 {60 - i} 秒...")
             log(f"登录成功！当前URL: {page.url}")
 
-        log(f"当前页面标题: {page.title()}")
+        log(f"当前页面标题: {await page.title()}")
         log(f"当前URL: {page.url}")
         log("=" * 50)
         log("自动化已启动！按 Ctrl+C 停止")
