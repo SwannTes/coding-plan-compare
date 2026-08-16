@@ -253,7 +253,7 @@ export const platforms: Platform[] = [
     subtitle: "V2.5 全系模型，Credits 额度全面升级，MiMo Claw 正式上线",
     icon: "📱",
     color: "#FF6700",
-    url: "https://platform.xiaomimimo.com/token-plan",
+    url: "https://platform.xiaomimimo.com?ref=GEPXGK",
     plans: [
       {
         name: "Lite",
@@ -297,6 +297,7 @@ export const platforms: Platform[] = [
       "Credits 额度全面升级 5~8 倍",
       "夜间 (0-8 点) 消耗 0.8 倍",
       "年付 88 折 + MiMo Claw 加购 ¥233.8/年",
+      "邀请码注册：双方各得 ¥10 + 首单 9 折",
     ],
     models: ["MiMo-V2.5-Pro", "MiMo-V2.5", "MiMo-V2.5-ASR", "MiMo-V2.5-TTS"],
   },
