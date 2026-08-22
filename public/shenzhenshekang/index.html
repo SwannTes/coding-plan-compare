@@ -102,11 +102,11 @@ function render() {
       inputs.push({ key: p.key, inp });
     }
     const btn = document.createElement("button");
-    btn.textContent = s.mode === "daemon" && s.running ? "已在运行" : "运行";
+    btn.textContent = s.running ? (s.mode === "daemon" ? "已在运行" : "运行中…") : "运行";
     btn.disabled = !s.exists || s.running;
     btn.onclick = () => runScript(s, btn, inputs);
     card.appendChild(btn);
-    if (s.mode === "daemon" && s.running) {
+    if (s.running) {
       const stopBtn = document.createElement("button");
       stopBtn.textContent = "停止";
       stopBtn.className = "stop";
