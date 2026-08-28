@@ -8,7 +8,9 @@
 2. 点击患者右侧的糖尿病按钮
 3. 点击左侧文件夹最末尾的日期，进入随访问卷
 4. 复制随访记录、设置下次随访日期、引用共享数据
-5. 填写随访方式、目标体重（BMI≥24时）、足背动脉、血糖、随访分类、用药情况
+5. 填写随访方式、目标体重（BMI≥24时）、足背动脉、血糖、随访分类
+   （空腹≥7.0或随机/餐后2h≥11.0时选控制不满意，并填转诊：原因=血糖控制不满意，
+   机构及科别=龙岗区人民医院内分泌科）、用药情况
 6. 保存问卷，处理健康教育弹窗
 
 说明：
@@ -168,6 +170,22 @@ def fill_diabetes():
         pbs = page.evaluate(
             "() => { const inp = document.getElementById('PBS'); return inp ? inp.value : ''; }")
         print(f"空腹血糖 = {fbs}，餐后2小时 = {p2h}，随机血糖 = {pbs}")
+
+        # 解析数值，用于判断随访分类：
+        # 空腹 >= 7.0 或 随机 >= 11.0 或 餐后2h >= 11.0 → 控制不满意
+        def _num(v):
+            try:
+                return float(str(v).strip())
+            except (TypeError, ValueError):
+                return None
+
+        fbs_n, p2h_n, pbs_n = _num(fbs), _num(p2h), _num(pbs)
+        control_unsatisfied = (
+            (fbs_n is not None and fbs_n >= 7.0)
+            or (p2h_n is not None and p2h_n >= 11.0)
+            or (pbs_n is not None and pbs_n >= 11.0)
+        )
+        print(f"随访分类判定: {'控制不满意' if control_unsatisfied else '控制满意'}")
 
         # 血糖优先级：空腹 > 餐后2小时 > 随机
         blood_sugar_value = None
@@ -593,38 +611,81 @@ def fill_diabetes():
         else:
             print("13. 病历首页无血糖值，跳过辅助检查血糖填写")
 
-        # ========== 10. 随访分类：控制满意 ==========
+        # ========== 10. 随访分类：按血糖值判定 ==========
         # ID后缀同样随表单实例变化（如 visitType_1_GFAI4），用前缀 + 可见性过滤
-        print("14. 选择随访分类：控制满意...")
-        run_click(page, """
-            () => {
-                const inps = Array.from(document.querySelectorAll('input[id^="visitType_1_"]'));
-                const inp = inps.find(el => {
+        # 控制满意=visitType_1_*，控制不满意=visitType_2_*
+        visit_type_value = '2' if control_unsatisfied else '1'
+        visit_type_desc = '控制不满意' if control_unsatisfied else '控制满意'
+        print(f"14. 选择随访分类：{visit_type_desc}...")
+        run_click(page, f"""
+            () => {{
+                const inps = Array.from(document.querySelectorAll('input[id^="visitType_{visit_type_value}_"]'));
+                const inp = inps.find(el => {{
                     let a = el;
-                    while (a && a !== document.body) {
+                    while (a && a !== document.body) {{
                         if (window.getComputedStyle(a).display === 'none') return false;
                         a = a.parentElement;
-                    }
+                    }}
                     return true;
-                });
+                }});
                 if (!inp) return false;
                 inp.setAttribute('data-kimi-click', '1');
                 return true;
-            }
-        """, "随访分类-控制满意", verify_js="""
-            () => {
-                const inps = Array.from(document.querySelectorAll('input[id^="visitType_1_"]'));
-                const inp = inps.find(el => {
+            }}
+        """, f"随访分类-{visit_type_desc}", verify_js=f"""
+            () => {{
+                const inps = Array.from(document.querySelectorAll('input[id^="visitType_{visit_type_value}_"]'));
+                const inp = inps.find(el => {{
                     let a = el;
-                    while (a && a !== document.body) {
+                    while (a && a !== document.body) {{
                         if (window.getComputedStyle(a).display === 'none') return false;
                         a = a.parentElement;
-                    }
+                    }}
                     return true;
-                });
+                }});
                 return inp ? (inp.checked || inp.type !== 'radio') : false;
-            }
+            }}
         """)
+
+        # ========== 10.5 控制不满意时填写转诊信息 ==========
+        # 转诊原因、机构及科别是可见的文本输入框，ID后缀与 visitType 相同
+        # （如 referralReason_QXKMX / referralOffice_QXKMX），
+        # 文档里另有隐藏模板副本（id="referralReason" 无后缀等），必须用 id前缀+可见性过滤
+        if control_unsatisfied:
+            print("14.1 填写转诊信息：原因=血糖控制不满意，机构及科别=龙岗区人民医院内分泌科...")
+            run_step(page, """
+                () => {
+                    const visOk = el => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) return false;
+                        let a = el;
+                        while (a && a !== document.body) {
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }
+                        return true;
+                    };
+                    const reasonInp = Array.from(document.querySelectorAll('input[id^="referralReason_"]')).find(visOk);
+                    const officeInp = Array.from(document.querySelectorAll('input[id^="referralOffice_"]')).find(visOk);
+                    if (!reasonInp && !officeInp) return false;
+                    if (reasonInp) {
+                        reasonInp.value = "血糖控制不满意";
+                        reasonInp.style.color = "#000";
+                        for (const t of ['input', 'change', 'blur']) {
+                            reasonInp.dispatchEvent(new Event(t, { bubbles: true }));
+                        }
+                    }
+                    if (officeInp) {
+                        officeInp.value = "龙岗区人民医院内分泌科";
+                        officeInp.style.color = "#000";
+                        for (const t of ['input', 'change', 'blur']) {
+                            officeInp.dispatchEvent(new Event(t, { bubbles: true }));
+                        }
+                    }
+                    return (!reasonInp || reasonInp.value === "血糖控制不满意")
+                        && (!officeInp || officeInp.value === "龙岗区人民医院内分泌科");
+                }
+            """, "填写转诊原因及机构科别")
 
         # ========== 11. 用药情况：打开并保存 ==========
         print("15. 打开用药情况...")
