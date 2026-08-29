@@ -274,21 +274,45 @@ def fill_hypertension():
                         return '';
                     };
 
-                    // 吸烟情况判断：用 smokingHistory_jzls_visit 字段
-                    const smokingHistory = getRadioValue('smokingHistory_jzls_visit');
+                    // 吸烟情况判断：优先 smokingHistory_jzls_visit，兜底任意 smokingHistory* 单选
+                    let smokingHistory = getRadioValue('smokingHistory_jzls_visit');
+                    if (!smokingHistory) {
+                        const r = document.querySelector('input[name^="smokingHistory"]:checked');
+                        if (r) smokingHistory = r.value;
+                    }
                     let smoking = '';
                     let smokeCount = '';
+                    let targetSmokeCount = '';
+
+                    // 从可见页面文本提取“日吸烟量（支）:13”“目标日吸烟量（支）:7”，
+                    // 兼容冒号/括号/空格等格式差异（innerText 自动跳过隐藏的缓存节点）。
+                    // 第一个“日吸烟量”匹配即当前值（“目标日吸烟量”排在其后）
+                    const anchor = document.querySelector('[id$="_jzls_visit"]');
+                    let scope = document.body;
+                    if (anchor) {
+                        let el = anchor;
+                        while (el && el !== document.body) {
+                            if ((el.innerText || '').includes('日吸烟量')) { scope = el; break; }
+                            el = el.parentElement;
+                        }
+                    }
+                    const scopeText = scope.innerText || '';
+                    const smokeMatch = scopeText.match(/日吸烟量[^0-9]{0,10}(\\d+)/);
+                    const targetSmokeMatch = scopeText.match(/目标日吸烟量[^0-9]{0,10}(\\d+)/);
 
                     if (smokingHistory && smokingHistory !== '3') {
                         // 吸烟的人（0=几乎每天，1=偶尔，2=已戒烟）
                         smoking = smokingHistory;
-                        // 从 smokeCount_jzls_visit 提取日吸烟量
-                        const smokeCountText = getText('smokeCount_jzls_visit');
-                        const match = smokeCountText.match(/日吸烟量 [（:）:](\\d+)/);
-                        if (match) smokeCount = match[1];
+                        if (smokeMatch) smokeCount = smokeMatch[1];
+                        if (targetSmokeMatch) targetSmokeCount = targetSmokeMatch[1];
                     } else if (smokingHistory === '3') {
                         // 不吸烟的人
                         smoking = '3';
+                    } else if (smokeMatch) {
+                        // 单选未读到但有日吸烟量，按“几乎每天”处理
+                        smoking = '0';
+                        smokeCount = smokeMatch[1];
+                        if (targetSmokeMatch) targetSmokeCount = targetSmokeMatch[1];
                     }
 
                     // 饮酒量
@@ -302,10 +326,14 @@ def fill_hypertension():
                     const psychology = getText('newPsychologyChange_jzls_visit');
                     // 遵医行为
                     const obeyDoctor = getText('newObeyDoctor_jzls_visit');
+                    // 最近7天内是否吸烟（yes/no）
+                    const smokingWSeven = getRadioValue('smokingWSeven_jzls_visit');
 
                     return {
                         smoking,
                         smokeCount,
+                        targetSmokeCount,
+                        smokingWSeven,
                         drinkCount,
                         trainTimes,
                         trainMinute,
@@ -317,6 +345,7 @@ def fill_hypertension():
             """)
             print(f"吸烟：{personal_info['smoking']}")
             print(f"日吸烟量：{personal_info['smokeCount']}支")
+            print(f"目标日吸烟量：{personal_info.get('targetSmokeCount', '')}支")
             print(f"日饮酒量：{personal_info['drinkCount']}两")
             print(f"运动：{personal_info['trainTimes']}次/周 {personal_info['trainMinute']}分钟/次")
             print(f"摄盐情况：{personal_info['salt']}")
@@ -516,7 +545,7 @@ def fill_hypertension():
                     }
 
                     return {
-                        smokingWSeven: 'no',
+                        smokingWSeven: smoking === '0' ? 'yes' : 'no',  // 吸烟者最近7天视为有吸烟
                         rawSmokingHistory: smoking,
                         smoking: smoking,
                         smokeCount: smokeCount,
@@ -555,82 +584,126 @@ def fill_hypertension():
             time.sleep(2)
 
         # ========== 点击病历首页弹窗 ==========
-        print("9. 点击病历首页弹窗...")
-        page.evaluate("""
+        # 先检测是否已在高血压随访问卷中（患者可能已手动打开问卷且填了一半），
+        # 已在问卷中则跳过打开问卷的步骤，避免重复点击把已选选项取消掉。
+        # 注意：前面的步骤已把页面切到档案/随访弹窗，问卷可能在后台标签或被挡住的弹窗里，
+        # 因此只要问卷字段存在于 DOM 就尝试激活其所在标签/弹窗，再确认可见
+        form_present = page.evaluate("""
             () => {
-                const li = document.getElementById('ext-comp-2278__ext-comp-2281');
-                if (li) {
-                    const a = li.querySelector('a.x-tab-right');
-                    if (a) a.click();
-                    return;
+                const el = document.getElementById('newCurrentSymptoms_9');
+                if (!el) return false;
+                const win = el.closest('.x-window');
+                if (win && typeof Ext !== 'undefined') {
+                    // 问卷在 Ext 弹窗里：显示并置前
+                    try {
+                        const cmp = Ext.getCmp(win.id);
+                        if (cmp && cmp.show) cmp.show();
+                        if (cmp && cmp.toFront) cmp.toFront();
+                    } catch (e) {}
+                } else {
+                    // 问卷在标签页里：激活对应标签（li id 格式为 标签面板id__面板id）
+                    const panel = el.closest('.x-panel');
+                    if (panel && panel.id) {
+                        const tab = document.querySelector('li[id$="__' + panel.id + '"]');
+                        const a = tab ? tab.querySelector('a.x-tab-right') : null;
+                        if (a) a.click();
+                    }
                 }
-                const allTabs = document.querySelectorAll('li[id^="ext-comp-"]');
-                for (let tab of allTabs) {
-                    const textSpan = tab.querySelector('span.x-tab-strip-text');
-                    if (textSpan && textSpan.textContent.includes('病历首页')) {
-                        const a = tab.querySelector('a.x-tab-right');
+                return true;
+            }
+        """)
+        already_in_form = False
+        if form_present:
+            time.sleep(1)
+            already_in_form = page.evaluate("""
+                () => {
+                    const el = document.getElementById('newCurrentSymptoms_9');
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const st = getComputedStyle(el);
+                    return r.width > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+                }
+            """)
+        if already_in_form:
+            print("9. 检测到已在高血压随访问卷中，跳过打开问卷步骤")
+        else:
+            print("9. 点击病历首页弹窗...")
+            page.evaluate("""
+                () => {
+                    const li = document.getElementById('ext-comp-2278__ext-comp-2281');
+                    if (li) {
+                        const a = li.querySelector('a.x-tab-right');
                         if (a) a.click();
                         return;
                     }
-                }
-            }
-        """)
-        time.sleep(3)
-
-        # ========== 点击高血压随访按钮 ==========
-        print("10. 点击高血压随访按钮...")
-        page.evaluate("""
-            () => {
-                const li = document.getElementById('KQGXYYW');
-                if (li) {
-                    const a = li.querySelector('a');
-                    if (a) a.click();
-                }
-            }
-        """)
-        time.sleep(3)
-
-        # 点击"是否需要完成高血压问卷？"弹窗中的确定
-        # 注意：页面中存在多个文本为"确定"的按钮，其中隐藏的"本季度尚未随访"弹窗里的排在前面，
-        # 全局顺序查找会先点到隐藏按钮（无效），必须定位到可见弹窗内的确定按钮
-        confirm_clicked = ''
-        for _ in range(10):
-            confirm_clicked = page.evaluate("""
-                () => {
-                    const wins = document.querySelectorAll('.x-window-dlg, .x-window');
-                    for (const w of wins) {
-                        const st = getComputedStyle(w);
-                        const r = w.getBoundingClientRect();
-                        if (st.display === 'none' || st.visibility !== 'visible' || r.width === 0) continue;
-                        const textEl = w.querySelector('.ext-mb-text');
-                        if (!textEl || !textEl.textContent.includes('高血压问卷')) continue;
-                        for (const b of w.querySelectorAll('button')) {
-                            if (b.textContent.trim() === '确定') {
-                                b.click();
-                                return 'clicked_in_dialog';
-                            }
+                    const allTabs = document.querySelectorAll('li[id^="ext-comp-"]');
+                    for (let tab of allTabs) {
+                        const textSpan = tab.querySelector('span.x-tab-strip-text');
+                        if (textSpan && textSpan.textContent.includes('病历首页')) {
+                            const a = tab.querySelector('a.x-tab-right');
+                            if (a) a.click();
+                            return;
                         }
-                        return 'no_confirm_btn';
                     }
-                    return '';
                 }
             """)
-            if confirm_clicked:
-                break
-            time.sleep(0.5)
-        if not confirm_clicked:
-            print("警告：未找到'是否需要完成高血压问卷？'弹窗，未能点击确定")
-        time.sleep(3)
+            time.sleep(3)
+
+        # ========== 点击高血压随访按钮 ==========
+        if not already_in_form:
+            print("10. 点击高血压随访按钮...")
+            page.evaluate("""
+                () => {
+                    const li = document.getElementById('KQGXYYW');
+                    if (li) {
+                        const a = li.querySelector('a');
+                        if (a) a.click();
+                    }
+                }
+            """)
+            time.sleep(3)
+
+            # 点击"是否需要完成高血压问卷？"弹窗中的确定
+            # 注意：页面中存在多个文本为"确定"的按钮，其中隐藏的"本季度尚未随访"弹窗里的排在前面，
+            # 全局顺序查找会先点到隐藏按钮（无效），必须定位到可见弹窗内的确定按钮
+            confirm_clicked = ''
+            for _ in range(10):
+                confirm_clicked = page.evaluate("""
+                    () => {
+                        const wins = document.querySelectorAll('.x-window-dlg, .x-window');
+                        for (const w of wins) {
+                            const st = getComputedStyle(w);
+                            const r = w.getBoundingClientRect();
+                            if (st.display === 'none' || st.visibility !== 'visible' || r.width === 0) continue;
+                            const textEl = w.querySelector('.ext-mb-text');
+                            if (!textEl || !textEl.textContent.includes('高血压问卷')) continue;
+                            for (const b of w.querySelectorAll('button')) {
+                                if (b.textContent.trim() === '确定') {
+                                    b.click();
+                                    return 'clicked_in_dialog';
+                                }
+                            }
+                            return 'no_confirm_btn';
+                        }
+                        return '';
+                    }
+                """)
+                if confirm_clicked:
+                    break
+                time.sleep(0.5)
+            if not confirm_clicked:
+                print("警告：未找到'是否需要完成高血压问卷？'弹窗，未能点击确定")
+            time.sleep(3)
 
         # ========== 填写高血压随访问卷 ==========
         print("12. 填写高血压随访问卷...")
 
         # 症状 - 无症状 (newCurrentSymptoms_9)
-        page.evaluate("() => { const inp = document.getElementById('newCurrentSymptoms_9'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('newCurrentSymptoms_9'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 新发疾病情况 - 无 (pastHistory_02_1101)
-        page.evaluate("() => { const inp = document.getElementById('pastHistory_02_1101'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('pastHistory_02_1101'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 个人史 - 吸烟 (smokingHistory: 0=几乎每天，1=偶尔，2=已戒烟，3=从不吸烟)
@@ -639,11 +712,25 @@ def fill_hypertension():
                 () => {{
                     const radios = document.querySelectorAll('input[name="smokingHistory"]');
                     for (let r of radios) {{
-                        if (r.value === '{personal_info['smoking']}') {{
+                        if (r.value === '{personal_info['smoking']}' && !r.checked) {{
                             r.click();
                             return;
                         }}
                     }}
+                }}
+            """)
+        time.sleep(0.5)
+
+        # 个人史 - 最近7天内吸烟了吗 (smokingWSeven: yes/no)
+        # 优先用医防融合问卷的值；没有则按吸烟状态推断（几乎每天/偶尔=是，已戒烟/从不=否）
+        if personal_info:
+            wseven = personal_info.get('smokingWSeven') or ''
+            if wseven not in ('yes', 'no'):
+                wseven = 'yes' if personal_info.get('smoking') in ('0', '1') else 'no'
+            page.evaluate(f"""
+                () => {{
+                    const inp = document.getElementById('smokingWSeven_{wseven}');
+                    if (inp && !inp.checked) inp.click();
                 }}
             """)
         time.sleep(0.5)
@@ -668,6 +755,25 @@ def fill_hypertension():
                     const el = document.getElementById('smokeCount');
                     if (el) {{
                         el.value = '{personal_info['smokeCount']}';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    }}
+                }}
+            """)
+        time.sleep(0.5)
+
+        # 个人史 - 目标日吸烟量 (targetSmokeCount)：
+        # 患者有吸烟时，目标 = 现吸烟量 - 5（减量控制在 3~5 支），最小为 0
+        target_smoke = ''
+        if personal_info:
+            sc = str(personal_info.get('smokeCount') or '')
+            if sc.isdigit() and int(sc) > 0:
+                target_smoke = str(max(int(sc) - 5, 0))
+        if target_smoke:
+            page.evaluate(f"""
+                () => {{
+                    const el = document.getElementById('targetSmokeCount');
+                    if (el) {{
+                        el.value = '{target_smoke}';
                         el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     }}
                 }}
@@ -748,13 +854,13 @@ def fill_hypertension():
                 page.evaluate(f"""
                     () => {{
                         const inp = document.getElementById('salt_{salt_value}');
-                        if (inp) inp.click();
+                        if (inp && !inp.checked) inp.click();
                     }}
                 """)
         time.sleep(0.5)
 
         # 目标摄盐情况 - 默认选择"轻" (new_targetSalt_1)
-        page.evaluate("() => { const inp = document.getElementById('new_targetSalt_1'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('new_targetSalt_1'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 心理调整 (newPsychologyChange: 1=良好，2=一般，3=差)
@@ -768,7 +874,7 @@ def fill_hypertension():
                 page.evaluate(f"""
                     () => {{
                         const inp = document.getElementById('newPsychologyChange_{psych_value}');
-                        if (inp) inp.click();
+                        if (inp && !inp.checked) inp.click();
                     }}
                 """)
         time.sleep(0.5)
@@ -784,7 +890,7 @@ def fill_hypertension():
                 page.evaluate(f"""
                     () => {{
                         const inp = document.getElementById('newObeyDoctor_{obey_value}');
-                        if (inp) inp.click();
+                        if (inp && !inp.checked) inp.click();
                     }}
                 """)
         time.sleep(0.5)
@@ -902,27 +1008,27 @@ def fill_hypertension():
                 }}
             """)
         else:
-            page.evaluate("() => { const inp = document.getElementById('visitExamination_0'); if (inp) inp.click(); }")
+            page.evaluate("() => { const inp = document.getElementById('visitExamination_0'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 诊断 - 高血压病 (diagnosis_0201)
-        page.evaluate("() => { const inp = document.getElementById('diagnosis_0201'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('diagnosis_0201'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 随访分类 - 控制满意 (newVisitEvaluate_1)
-        page.evaluate("() => { const inp = document.getElementById('newVisitEvaluate_1'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('newVisitEvaluate_1'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 药物不良反应 - 无 (adverseDrugReaction_1)
-        page.evaluate("() => { const inp = document.getElementById('adverseDrugReaction_1'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('adverseDrugReaction_1'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 转诊 - 否 (Referral_n)
-        page.evaluate("() => { const inp = document.getElementById('Referral_n'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('Referral_n'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 本人就诊 - 是 (selfVisit_y)
-        page.evaluate("() => { const inp = document.getElementById('selfVisit_y'); if (inp) inp.click(); }")
+        page.evaluate("() => { const inp = document.getElementById('selfVisit_y'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 目前用药 - 先填既往问卷收集的药品，再填今日处方中药名不重复的药品
@@ -950,19 +1056,15 @@ def fill_hypertension():
 
         if med_entries:
             print(f"填写目前用药：{', '.join(e['name'] for e in med_entries)}")
-            # 先清理表格中残留的空行和重复药名行（避免必填校验导致无法保存）
+            # 先清空表格中残留的行（含上次运行已填的），下面会按最新清单重新填，避免重复
             page.evaluate("""
                 () => {
                     const tbl = document.getElementById('chisMedicineTTr2');
                     if (!tbl) return;
-                    const seen = new Set();
                     [...tbl.querySelectorAll('input[name^="drugNames"]')].forEach(inp => {
-                        const drug = inp.value.trim();
                         const tr = inp.closest('tr');
                         const del = tr ? [...tr.querySelectorAll('a')].find(a => a.textContent.includes('删除')) : null;
-                        if (!del) return;
-                        if (!drug || seen.has(drug)) del.click();
-                        else seen.add(drug);
+                        if (del) del.click();
                     });
                 }
             """)
