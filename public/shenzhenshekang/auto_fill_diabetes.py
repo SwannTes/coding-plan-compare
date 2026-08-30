@@ -5,9 +5,13 @@
 
 流程：
 1. 连接调试Chrome，收集病历首页数据（BMI、血糖、年龄）
-2. 点击患者右侧的糖尿病按钮
-3. 点击左侧文件夹最末尾的日期，进入随访问卷
-4. 复制随访记录、设置下次随访日期、引用共享数据
+2. 点击患者右侧的糖尿病按钮，并切换可视窗口到"糖尿病患者随访"标签页
+3. 真实点击左侧记录列表中日期最大的随访问卷：
+   - 问卷空白（随访方式未选，如从未做过随访）→ 直接使用这份问卷
+   - 问卷已有内容 → 点"增加"按钮，在弹窗"请选择计划日期"输入框填入
+     今天日期并点确定，新建一份空白问卷
+4. 复制随访记录（空白问卷同样要复制，用于带入上一次随访内容）、
+   设置下次随访日期（控制满意=3个月后，控制不满意=10天后）、引用共享数据
 5. 填写随访方式、目标体重（BMI≥24时）、足背动脉、血糖、随访分类
    （空腹≥7.0或随机/餐后2h≥11.0时选控制不满意，并填转诊：原因=血糖控制不满意，
    机构及科别=龙岗区人民医院内分泌科）、用药情况
@@ -21,7 +25,7 @@
 """
 
 from playwright.sync_api import sync_playwright
-from datetime import datetime
+from datetime import datetime, timedelta
 import calendar
 import json
 import time
@@ -242,8 +246,26 @@ def fill_diabetes():
             }
         """, "点击糖尿病按钮")
 
-        # ========== 2. 点击左侧文件夹最末尾的日期 ==========
-        print("6. 选择随访问卷（左侧记录列表最后一行）...")
+        # ========== 2. 切换可视窗口到"糖尿病患者随访"标签页 ==========
+        # 参考高血压脚本：点击糖尿病图标后"糖尿病患者随访"标签页已打开，
+        # 但可视窗口可能还停在病历首页，需要激活对应标签页切换过去
+        print("6. 切换到糖尿病患者随访窗口...")
+        run_step(page, """
+            () => {
+                const tabs = document.querySelectorAll('li.x-tab-strip-closable');
+                for (let tab of tabs) {
+                    const textSpan = tab.querySelector('span.x-tab-strip-text');
+                    if (textSpan && textSpan.textContent.includes('糖尿病患者随访')) {
+                        const a = tab.querySelector('a.x-tab-right');
+                        if (a) { a.click(); return true; }
+                    }
+                }
+                return false;
+            }
+        """, "切换到糖尿病患者随访窗口")
+
+        # ========== 3. 真实点击左侧记录列表中日期最大的随访问卷 ==========
+        print("7. 选择随访问卷（左侧记录列表日期最大的一行）...")
         # 左侧随访记录是一个窄的x-grid3表格（行内有 yyyy-mm-dd 日期单元格），
         # 不能按"糖尿病患者随访"文字找panel——那会匹配到整个页面，误点其他链接
         run_click(page, r"""
@@ -253,6 +275,10 @@ def fill_diabetes():
                 for (let g of grids) {
                     const r = g.getBoundingClientRect();
                     if (r.width === 0 || r.height === 0) continue;
+                    // ExtJS 会把关闭的窗口移到 (-10000,-10000) 附近而不是 display:none，
+                    // 那些屏幕外表格（如共享数据里的体检表格）也带日期单元格，
+                    // 不排除的话按 x 排序会选中屏幕外表格，点击永远超时
+                    if (r.x < -100 || r.y < -100) continue;
                     let anc = g, hidden = false;
                     while (anc && anc !== document.body) {
                         if (window.getComputedStyle(anc).display === 'none') { hidden = true; break; }
@@ -268,20 +294,158 @@ def fill_diabetes():
                             if (/^20\d{2}-\d{2}-\d{2}$/.test((c.textContent || '').trim())) { dateRows++; break; }
                         }
                     }
-                    if (dateRows >= 2) candidates.push({g, r, rows});
+                    if (dateRows >= 1) candidates.push({g, r, rows});
                 }
                 if (candidates.length === 0) return false;
-                // 取最靠左的候选表格 = 左侧随访记录列表，点击最后一行
+                // 取最靠左的候选表格 = 左侧随访记录列表
                 candidates.sort((a, b) => a.r.x - b.r.x || a.r.width - b.r.width);
                 const target = candidates[0];
-                const lastRow = target.rows[target.rows.length - 1];
-                lastRow.setAttribute('data-kimi-click', '1');
+                // 找日期最大的行，而不是简单取 DOM 最后一行
+                let bestRow = null, bestDate = '';
+                for (let row of target.rows) {
+                    const cells = row.querySelectorAll('.x-grid3-cell-inner');
+                    for (let c of cells) {
+                        const t = (c.textContent || '').trim();
+                        if (/^20\d{2}-\d{2}-\d{2}$/.test(t) && t > bestDate) {
+                            bestDate = t; bestRow = row; break;
+                        }
+                    }
+                }
+                if (!bestRow) return false;
+                bestRow.setAttribute('data-kimi-click', '1');
                 return true;
             }
         """, "选择随访问卷", timeout=15)
 
-        # ========== 3. 点击复制随访记录 ==========
-        print("7. 点击复制随访记录...")
+        # ========== 4. 判断随访问卷是否空白（随访方式是否已选） ==========
+        # 选中记录行后问卷数据需要加载，先轮询等待可见的 visitWay 单选出现
+        print("8. 判断随访问卷是否为空白（看随访方式是否已选）...")
+        visitway_visible_js = """
+            () => {
+                const radios = Array.from(document.querySelectorAll('input[type="radio"][name="visitWay"]'));
+                return radios.some(r => {
+                    let a = r;
+                    while (a && a !== document.body) {
+                        if (window.getComputedStyle(a).display === 'none') return false;
+                        a = a.parentElement;
+                    }
+                    return true;
+                });
+            }
+        """
+        deadline_load = time.time() + 15
+        while time.time() < deadline_load:
+            try:
+                if page.evaluate(visitway_visible_js):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        is_blank_form = True
+        try:
+            is_blank_form = not page.evaluate("""
+                () => {
+                    const radios = Array.from(document.querySelectorAll('input[type="radio"][name="visitWay"]'));
+                    return radios.some(r => {
+                        let a = r;
+                        while (a && a !== document.body) {
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }
+                        return r.checked;
+                    });
+                }
+            """)
+        except Exception:
+            is_blank_form = True
+
+        if is_blank_form:
+            print("  随访问卷是空白的（随访方式未选），直接使用这份问卷")
+        else:
+            # 问卷已填过：点"增加"，在弹窗"请选择计划日期"输入今天日期并确定
+            print("  随访问卷已有内容，点击增加新建空白问卷...")
+            run_click(page, """
+                () => {
+                    const onScreen = el => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) return false;
+                        if (r.x < -100 || r.y < -100) return false;
+                        let a = el;
+                        while (a && a !== document.body) {
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }
+                        return true;
+                    };
+                    for (let btn of document.querySelectorAll('button')) {
+                        const txt = (btn.textContent || '').replace(/[\s ]/g, '');
+                        if (txt.indexOf('增加') === 0 && onScreen(btn)) {
+                            btn.setAttribute('data-kimi-click', '1');
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """, "点击增加按钮", timeout=15)
+
+            # 在弹窗的"请选择计划日期"输入框填入今天日期
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            run_step(page, f"""
+                () => {{
+                    const wins = Array.from(document.querySelectorAll('.x-window'));
+                    const win = wins.find(w => {{
+                        const s = window.getComputedStyle(w);
+                        const r = w.getBoundingClientRect();
+                        if (s.display === 'none' || s.visibility === 'hidden' || r.width === 0) return false;
+                        if (r.x < -100 || r.y < -100) return false;
+                        return (w.textContent || '').includes('请选择计划日期');
+                    }});
+                    if (!win) return false;
+                    const inp = Array.from(win.querySelectorAll('input')).find(i => {{
+                        const r = i.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    }});
+                    if (!inp) return false;
+                    inp.focus();
+                    inp.value = {json.dumps(today_str)};
+                    for (const t of ['input', 'change', 'blur']) {{
+                        inp.dispatchEvent(new Event(t, {{ bubbles: true }}));
+                    }}
+                    return inp.value === {json.dumps(today_str)};
+                }}
+            """, f"填写计划日期 {today_str}", timeout=15)
+
+            # 点击弹窗内"确定"按钮
+            run_click(page, """
+                () => {
+                    const wins = Array.from(document.querySelectorAll('.x-window'));
+                    const win = wins.find(w => {
+                        const s = window.getComputedStyle(w);
+                        const r = w.getBoundingClientRect();
+                        if (s.display === 'none' || s.visibility === 'hidden' || r.width === 0) return false;
+                        if (r.x < -100 || r.y < -100) return false;
+                        return (w.textContent || '').includes('请选择计划日期');
+                    });
+                    if (!win) return false;
+                    for (let b of win.querySelectorAll('button')) {
+                        const txt = (b.textContent || '').replace(/[\s ]/g, '');
+                        if (txt.indexOf('确定') === 0) {
+                            b.setAttribute('data-kimi-click', '1');
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """, "确定新建随访", timeout=15)
+
+            # 新建问卷加载需要时间，等待 visitWay 单选重新出现
+            run_step(page, visitway_visible_js, "等待新问卷加载", timeout=15)
+
+        # ========== 5. 点击复制随访记录 ==========
+        # 空白问卷（计划的空白随访）和"增加"新建的问卷都需要点"复制随访记录"，
+        # 从上一次已完成的随访中复制内容
+        print("9. 点击复制随访记录...")
         run_click(page, """
             () => {
                 const onScreen = el => {
@@ -306,17 +470,24 @@ def fill_diabetes():
             }
         """, "复制随访记录", timeout=15)
 
-        # ========== 4. 设置下次随访日期（3个月后，日期超出月末则取月末） ==========
+        # ========== 4. 设置下次随访日期 ==========
+        # 控制满意：3个月后（日期超出月末则取月末）
+        # 控制不满意（空腹>=7.0 或 随机/餐后2h>=11.0）：10天后随访
         print("8. 设置下次随访日期...")
         now = datetime.now()
-        month = now.month + 3
-        year = now.year
-        if month > 12:
-            month -= 12
-            year += 1
-        day = min(now.day, calendar.monthrange(year, month)[1])
-        next_date = f"{year}-{month:02d}-{day:02d}"
-        print(f"下次随访日期: {next_date}")
+        if control_unsatisfied:
+            next_dt = now + timedelta(days=10)
+            next_date = next_dt.strftime('%Y-%m-%d')
+            print(f"血糖控制不满意，下次随访日期为10天后: {next_date}")
+        else:
+            month = now.month + 3
+            year = now.year
+            if month > 12:
+                month -= 12
+                year += 1
+            day = min(now.day, calendar.monthrange(year, month)[1])
+            next_date = f"{year}-{month:02d}-{day:02d}"
+            print(f"下次随访日期: {next_date}")
 
         # 注意：页面DOM里可能存在多个同名 nextDate_ 输入框（其他问卷模板的隐藏副本），
         # 必须过滤出可见的那个，否则会填到隐藏输入框上，看起来就像没点中
