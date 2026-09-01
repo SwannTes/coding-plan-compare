@@ -385,7 +385,7 @@ export default function Home() {
         <div className="max-w-6xl mx-auto px-4 py-8">
           <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
             <div className="text-sm text-gray-500">
-              数据更新于 2026 年 8 月，价格以各平台官网为准
+              数据更新于 2026 年 9 月，价格以各平台官网为准
             </div>
             <div className="flex items-center gap-4 text-sm text-gray-500">
               <a
