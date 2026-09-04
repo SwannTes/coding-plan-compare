@@ -7,7 +7,7 @@
    旧面板里残留的筛选清不掉，必须开全新面板才是干净状态）
 2. 点击"统计分析" → "就诊历史记录"（打开全新面板）→ 点"本人"（jzls=3）
 3. 挂号时间填入起止日期（命令行参数指定月份，如 `python auto_fill_monthly_check.py 7`
-   → 当年 7 月整月；留空默认本月 1 号至今天）
+   → 当年 7 月整月；留空默认上一个自然月）
 4. 第一部分：直接搜索当月全部患者，翻页爬取，筛出"是否完善病历=否"，
    保存 Excel 到桌面（病历未完善患者_YYYY-MM.xlsx）
 5. 第二部分（女性 14-49 岁）：键盘输入最小年龄14、最大年龄49
@@ -425,21 +425,22 @@ def save_excel(rows, filename, desc):
 
 
 def month_range(month_arg=""):
-    """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-止日')。
-    month_arg 为空：本月 1 号到今天（如 8 月 20 日运行 → 08-01 至 08-20）；
-    为 1-12：该年该月整月，月份大于当前月份时取上一年（如 1 月查去年 12 月）。"""
+    """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-月末')。
+    month_arg 为空：上一个自然月；为 1-12：该年该月，
+    月份大于当前月份时取上一年（如 1 月查去年 12 月）。"""
     now = datetime.now()
     if month_arg:
         month = int(month_arg)
         if not 1 <= month <= 12:
             raise ValueError(f"月份必须是 1-12，收到: {month_arg!r}")
         year = now.year - 1 if month > now.month else now.year
-        last_day = calendar.monthrange(year, month)[1]
-        end = f"{year}-{month:02d}-{last_day:02d}"
     else:
-        year, month = now.year, now.month
-        end = now.strftime("%Y-%m-%d")
-    return f"{year}-{month:02d}-01", end
+        year, month = now.year, now.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"
 
 
 def monthly_check():
@@ -549,7 +550,7 @@ def monthly_check():
             return target ? target.checked : false;
         }""")
 
-        # ========== 4. 挂号时间：命令行参数指定月份，默认本月至今 ==========
+        # ========== 4. 挂号时间：命令行参数指定月份，默认上月 ==========
         month_arg = sys.argv[1].strip() if len(sys.argv) > 1 else ""
         try:
             start_date, end_date = month_range(month_arg)

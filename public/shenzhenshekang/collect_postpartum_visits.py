@@ -717,7 +717,8 @@ def collect():
             return
         print("3. 连接成功!")
 
-        target_url = "10.130.20.249:8661"
+        # 只按主机名匹配，不限端口（见过 8661 和 28661 两种端口）
+        target_url = "10.130.20.249"
         page = None
         for ctx in browser.contexts:
             for pg in ctx.pages:
@@ -728,7 +729,7 @@ def collect():
                 break
         if not page:
             print(f"错误：未找到包含 {target_url} 的页面，请先打开 "
-                  "https://10.130.20.249:8661/fyweb/#/login 并登录")
+                  "https://10.130.20.249:28661/fyweb/#/login 并登录")
             return
         print(f"4. 当前页面标题: {page.title()}")
         if "/login" in page.url:

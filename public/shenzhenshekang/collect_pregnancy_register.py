@@ -52,7 +52,7 @@ FAILED_STEPS = []
 
 DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
 
-FYWEB_HOST = "10.130.20.249:8661"       # 妇幼保健管理信息系统
+FYWEB_HOST = "10.130.20.249"            # 妇幼保健管理信息系统（只按主机名匹配，不限端口：见过 8661 和 28661）
 UDRHIP_MARK = "/udrhip/"                # 孕产妇协同管理信息系统
 PORTAL_MARK = "172.17.9.215:8289"       # 龙岗区全民健康信息平台（站点导航）
 
@@ -287,7 +287,17 @@ def fyweb_goto_register(page):
         return true;
     """), "点击孕妇建档一览表", verify_js=on_page, timeout=15)
     if ok:
-        wait_table_loaded(page, "孕妇建档一览表加载", timeout=15)
+        # 就绪标准：筛选表单（建档日期）或结果表格出现其一。首次进入还没点查询，
+        # 页面可能不渲染结果表格，等表格会误报超时（2026-09-02 实测）
+        if run_step(page, locate("return !!formItem('建档日期') || !!tableBody();"),
+                    "孕妇建档一览表加载", timeout=15, quiet=True):
+            run_step(page, locate("""
+                return !Array.from(document.querySelectorAll('.ivu-spin-fix')).find(onScreen);
+            """), "孕妇建档一览表加载-加载层消失", timeout=5, quiet=True, record=False)
+            print("  [成功] 孕妇建档一览表加载")
+        else:
+            print("  [超时] 孕妇建档一览表加载 —— 页面未就绪，请手动处理")
+            FAILED_STEPS.append("孕妇建档一览表加载")
     return ok
 
 

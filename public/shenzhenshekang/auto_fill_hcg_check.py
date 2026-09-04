@@ -7,7 +7,7 @@
    旧面板里残留的筛选清不掉，必须开全新面板才是干净状态）
 2. 点击"统计分析" → "诊疗项目统计"（模块 li id = CIC_module_IVC20，实测）
 3. 开始/结束时间填入起止日期（命令行参数指定月份，如
-   `python auto_fill_hcg_check.py 5` → 当年 5 月整月；留空默认本月 1 号至今天，
+   `python auto_fill_hcg_check.py 5` → 当年 5 月整月；留空默认上一个自然月，
    与 fubao/monthly 脚本一致；也兼容 2026-05 这种 yyyy-mm 写法）
 4. 循环项目名列表 ITEM_NAMES：清空并输入项目名 → 点"查询" →
    翻页爬取全部结果行 → 打印到控制台
@@ -405,7 +405,7 @@ def print_rows(rows):
 
 def month_range(month_arg=""):
     """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-月末')。
-    与 fubao/monthly 脚本一致：month_arg 为空 → 本月 1 号到今天；为 1-12 → 该年该月整月，
+    与 fubao/monthly 脚本一致：month_arg 为空 → 上一个自然月；为 1-12 → 该年该月，
     月份大于当前月份时取上一年（如 1 月查去年 12 月）。
     另外兼容 'yyyy-mm' 写法（如 2026-05），方便直接指定年月。
     月末日期由 calendar.monthrange 算，28/29/30/31 天自动处理。"""
@@ -420,17 +420,18 @@ def month_range(month_arg=""):
             if not 1 <= month <= 12:
                 raise ValueError(f"月份必须是 1-12，收到: {month_arg!r}")
             year = now.year - 1 if month > now.month else now.year
-        last_day = calendar.monthrange(year, month)[1]
-        end = f"{year}-{month:02d}-{last_day:02d}"
     else:
-        year, month = now.year, now.month
-        end = now.strftime("%Y-%m-%d")
-    return f"{year}-{month:02d}-01", end
+        year, month = now.year, now.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"
 
 
 def hcg_check():
     print("1. 开始启动...")
-    # 月份参数：命令行第 1 个参数（面板输入框也是传到这里），留空默认本月至今
+    # 月份参数：命令行第 1 个参数（面板输入框也是传到这里），留空默认上个月
     month_arg = sys.argv[1].strip() if len(sys.argv) > 1 else ""
     try:
         start_date, end_date = month_range(month_arg)
