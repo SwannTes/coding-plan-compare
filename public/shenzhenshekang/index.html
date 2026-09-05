@@ -20,6 +20,7 @@
   .card .state.running { color: #fa8c16; }
   .card .param { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
   .card .param input { flex: 1; padding: 7px 10px; font-size: 14px; border: 1px solid #d9d9d9; border-radius: 6px; }
+  .card .param input[type=checkbox] { flex: none; width: 18px; height: 18px; padding: 0; }
   button { width: 100%; padding: 10px 0; font-size: 15px; border: none; border-radius: 6px;
            background: #1677ff; color: #fff; cursor: pointer; }
   button:hover:not(:disabled) { background: #4096ff; }
@@ -75,9 +76,11 @@ async function refresh() {
 
 function render() {
   // 重渲染前保存输入框内容（状态每 5 秒刷新一次，不能清掉用户正在输入的值）
+  // 复选框存 "1"/"0"，文本框存输入值
   const saved = {};
   grid.querySelectorAll("input[data-script]").forEach(inp => {
-    saved[inp.dataset.script + "|" + inp.dataset.pkey] = inp.value;
+    saved[inp.dataset.script + "|" + inp.dataset.pkey] =
+      inp.type === "checkbox" ? (inp.checked ? "1" : "0") : inp.value;
   });
   grid.innerHTML = "";
   for (const s of scripts) {
@@ -90,16 +93,27 @@ function render() {
     for (const p of (s.params || [])) {
       const row = document.createElement("div");
       row.className = "param";
-      row.innerHTML = `<span>${p.label}</span>`;
       const inp = document.createElement("input");
-      inp.placeholder = p.placeholder || "";
       inp.dataset.script = s.key;
       inp.dataset.pkey = p.key;
       const old = saved[s.key + "|" + p.key];
-      if (old !== undefined) inp.value = old;
-      row.appendChild(inp);
+      if (p.type === "checkbox") {
+        // 复选框：文字在框后面；无旧值时用服务端给的默认值（默认勾选）
+        inp.type = "checkbox";
+        inp.checked = old !== undefined ? old === "1" : p.default !== false;
+        row.appendChild(inp);
+        const lab = document.createElement("span");
+        lab.textContent = p.label;
+        row.appendChild(lab);
+        inputs.push({ key: p.key, inp, checkbox: true });
+      } else {
+        row.innerHTML = `<span>${p.label}</span>`;
+        inp.placeholder = p.placeholder || "";
+        if (old !== undefined) inp.value = old;
+        row.appendChild(inp);
+        inputs.push({ key: p.key, inp });
+      }
       card.appendChild(row);
-      inputs.push({ key: p.key, inp });
     }
     const btn = document.createElement("button");
     btn.textContent = s.running ? (s.mode === "daemon" ? "已在运行" : "运行中…") : "运行";
@@ -120,11 +134,15 @@ function render() {
 async function runScript(s, btn, inputs) {
   btn.disabled = true;
   btn.textContent = "运行中…";
-  // 面板输入的参数拼进查询串，服务会作为命令行参数传给脚本
+  // 面板输入的参数拼进查询串，服务会作为命令行参数传给脚本；复选框总是带上 1/0
   let qs = "";
-  for (const { key, inp } of (inputs || [])) {
-    const v = inp.value.trim();
-    if (v) qs += (qs ? "&" : "?") + encodeURIComponent(key) + "=" + encodeURIComponent(v);
+  for (const it of (inputs || [])) {
+    if (it.checkbox) {
+      qs += (qs ? "&" : "?") + encodeURIComponent(it.key) + "=" + (it.inp.checked ? "1" : "0");
+    } else {
+      const v = it.inp.value.trim();
+      if (v) qs += (qs ? "&" : "?") + encodeURIComponent(it.key) + "=" + encodeURIComponent(v);
+    }
   }
   log(`开始运行「${s.name}」…`);
   try {

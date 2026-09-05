@@ -249,6 +249,7 @@ npm run lint      # ESLint 检查
 | 没有 SEO sitemap/robots | 中 | 可加 `app/sitemap.ts` + `app/robots.ts` |
 | 没有 analytics | 低 | 可加 Vercel Analytics（零成本） |
 | 暗色为主，亮色样式未优化 | 低 | 当前数据表明用户偏好暗色（科技产品） |
+| `/shenzhenshekang/` 下社康脚本公网可下载 | 中 | 已知风险（2026-09 阿望确认暂缓处理，单人使用场景）：脚本含社康业务逻辑，无凭证/内网地址暴露。未来方向：会员制鉴权下载（serverless 验 token，客户端 button_service.py 下载加 header） |
 
 ### 5.3 扩展方向（如果以后要做）
 

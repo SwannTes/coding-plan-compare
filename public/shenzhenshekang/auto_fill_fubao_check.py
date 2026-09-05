@@ -7,7 +7,7 @@
    旧面板里残留的筛选清不掉，必须开全新面板才是干净状态）
 2. 点击"统计分析" → "就诊历史记录"（打开全新面板）→ 点"全院"（jzls=1）
 3. 挂号时间填入起止日期（命令行参数指定月份，如 `python auto_fill_fubao_check.py 7`
-   → 当年 7 月整月；留空默认上一个自然月）
+   → 当年 7 月整月；留空默认本月 1 号至今天）
 4. 女性 14-49 岁：键盘输入最小年龄14、最大年龄49
    4.1 下拉选"填写末次月经=未填写" → 搜索爬取
        → 妇保-末次月经未填写_女14-49_YYYY-MM.xlsx
@@ -21,6 +21,9 @@
            有说明指标如 血HCG<5阴性/否认怀孕/拒查HCG/已绝经/哺乳期/尿HCG阴性
            → 妇保-月经延迟_YYYY-MM.xlsx
        （分类规则用 2026-07 全院 20 条真实延迟病历逐一验证过）
+   4.3 清空年龄/末次月经/就诊类型筛选，查询字段选择器选「诊断查询」，
+       逐个输入关键词（月经延长/停经/孕/妊娠/胚胎/试管/黄体/流产/先兆/人流/药流/辅助），
+       结果合并去重 → 妇保-诊断含孕_YYYY-MM.xlsx
 
 关键机制（继承自 monthly 脚本，都是实测趟出来的）：
 - 系统的"导出"按钮不可用，改为直接读结果表格的 Ext store 数据（含全部字段）。
@@ -524,6 +527,29 @@ def pick_combo(page, combo_name, item_text, desc):
     return False
 
 
+def clear_field(page, field_name, desc):
+    """清空文本输入框：Ext setValue('')，组件级操作，不要求元素可见
+    （搜索/读完病历后表单行可能被收起，真实键盘定位会找不到）。"""
+    ok = run_step(page, "() => {" + PANEL_JS + f"""
+        let found = false;
+        Ext.ComponentMgr.all.each(c => {{
+            if (found) return;
+            if (c && c.el && c.el.dom && (c.name === {json.dumps(field_name)} || c.el.dom.name === {json.dumps(field_name)})
+                && c.setValue) {{
+                c.setValue('');
+                found = String(c.getValue ? c.getValue() : '') === '';
+            }}
+        }});
+        return found;
+    }}""", desc, timeout=5, quiet=True)
+    if ok:
+        print(f"  [成功] {desc}")
+    else:
+        print(f"  [失败] {desc}")
+        FAILED_STEPS.append(desc)
+    return ok
+
+
 def type_field(page, field_name, text, desc):
     """真实键盘输入到面板内的输入框：点击 → 全选 → 输入 → Tab 提交。"""
     if not run_click(page, "() => {" + PANEL_JS + f"""
@@ -597,22 +623,21 @@ DELAY_FIELDS = FIELDS + [("_MCYJ", "末次月经"), ("_JYJG", "检验结果"), (
 
 
 def month_range(month_arg=""):
-    """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-月末')。
-    month_arg 为空：上一个自然月；为 1-12：该年该月，
-    月份大于当前月份时取上一年（如 1 月查去年 12 月）。"""
+    """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-止日')。
+    month_arg 为空：本月 1 号到今天（如 8 月 20 日运行 → 08-01 至 08-20）；
+    为 1-12：该年该月整月，月份大于当前月份时取上一年（如 1 月查去年 12 月）。"""
     now = datetime.now()
     if month_arg:
         month = int(month_arg)
         if not 1 <= month <= 12:
             raise ValueError(f"月份必须是 1-12，收到: {month_arg!r}")
         year = now.year - 1 if month > now.month else now.year
+        last_day = calendar.monthrange(year, month)[1]
+        end = f"{year}-{month:02d}-{last_day:02d}"
     else:
-        year, month = now.year, now.month - 1
-        if month == 0:
-            month = 12
-            year -= 1
-    last_day = calendar.monthrange(year, month)[1]
-    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"
+        year, month = now.year, now.month
+        end = now.strftime("%Y-%m-%d")
+    return f"{year}-{month:02d}-01", end
 
 
 def fubao_check():
@@ -722,7 +747,7 @@ def fubao_check():
             return target ? target.checked : false;
         }""")
 
-        # ========== 4. 挂号时间：命令行参数指定月份，默认上月 ==========
+        # ========== 4. 挂号时间：命令行参数指定月份，默认本月至今 ==========
         month_arg = sys.argv[1].strip() if len(sys.argv) > 1 else ""
         try:
             start_date, end_date = month_range(month_arg)
@@ -777,6 +802,91 @@ def fubao_check():
                 # 表二（无说明）和表三（有说明）合并输出，靠"判定依据"列区分
                 save_excel(tables[2] + tables[3], f"妇保-月经延迟_{ym}.xlsx",
                            "表二+表三 合并名单", fields=DELAY_FIELDS)
+
+        # ========== 6. 诊断查询=孕（先清空前几步用过的筛选条件） ==========
+        print("13. 诊断查询=孕（清空年龄/末次月经/就诊类型筛选）...")
+        # 第12步读病历正文可能让活动标签页跑偏，先把「就诊历史记录」标签页激活回来
+        run_click(page, locate(r"""
+            const tab = Array.from(document.querySelectorAll('li[class*="x-mytab-strip"]'))
+                .find(li => (li.textContent || '').includes('就诊历史记录') && onScreen(li));
+            if (!tab) return false;
+            tab.setAttribute('data-kimi-click', '1');
+            return true;
+        """), "激活就诊历史记录标签页", timeout=8, quiet=True, record=False)
+        time.sleep(1)
+        # 前面分类读取病历后表单可能处于过渡状态，先 Escape 收弹层再等一下
+        page.keyboard.press("Escape")
+        time.sleep(1)
+        # 年龄清空用 Ext setValue（第12步后表单行可能不可见，键盘定位会失败）；
+        # 三个下拉恢复"全部"（这个系统里"全部"就是空值，getValue 返回 ''）
+        clr_ok = clear_field(page, "minYear", "清空最小年龄")
+        clr_ok = clear_field(page, "maxYear", "清空最大年龄") and clr_ok
+        clr_ok = pick_combo(page, "hasMCYJ", "全部", "填写末次月经=全部") and clr_ok
+        clr_ok = pick_combo(page, "hasMCYJYC", "全部", "末次月经延迟35天=全部") and clr_ok
+        clr_ok = pick_combo(page, "jzlx", "全部", "就诊类型=全部") and clr_ok
+        # 「诊断查询」是查询字段选择器的一个选项：选择器没有语义 name，
+        # 用"值输入框（门诊号码=MZHM/诊断查询=ZYZD）左边紧邻的下拉"定位它，选「诊断查询」
+        zd_ok = run_click(page, "() => {" + PANEL_JS + r"""
+            const pel = panelEl();
+            if (!pel) return false;
+            const valInp = Array.from(pel.querySelectorAll('input'))
+                .find(i => ['MZHM', 'ZYZD'].includes(i.name) && onScreen(i));
+            if (!valInp) return false;
+            let combo = null;
+            Ext.ComponentMgr.all.each(c => {
+                if (combo) return;
+                if (c instanceof Ext.form.ComboBox && c.el && c.el.dom && pel.contains(c.el.dom)) {
+                    const rc = c.el.dom.getBoundingClientRect();
+                    const vr = valInp.getBoundingClientRect();
+                    if (Math.abs(rc.y - vr.y) < 20 && rc.x < vr.x && vr.x - (rc.x + rc.width) < 150) combo = c;
+                }
+            });
+            if (!combo) return false;
+            const wrap = combo.el.dom.closest('.x-form-field-wrap');
+            const trig = wrap ? wrap.querySelector('.x-form-trigger') : null;
+            if (!trig) return false;
+            trig.setAttribute('data-kimi-click', '1');
+            return true;
+        }""", "展开查询字段选择器", timeout=10, quiet=True, record=False)
+        if zd_ok:
+            time.sleep(0.8)
+            zd_ok = run_click(page, locate(r"""
+                const lists = Array.from(document.querySelectorAll('.x-combo-list')).filter(l => {
+                    const st = window.getComputedStyle(l);
+                    const r = l.getBoundingClientRect();
+                    return st.display !== 'none' && r.width > 0 && r.x > -100;
+                });
+                const mine = lists.find(l => Array.from(l.querySelectorAll('.x-combo-list-item'))
+                    .some(i => (i.textContent || '').trim() === '诊断查询'));
+                if (!mine) return false;
+                const item = Array.from(mine.querySelectorAll('.x-combo-list-item'))
+                    .find(i => (i.textContent || '').trim() === '诊断查询');
+                if (!item) return false;
+                item.setAttribute('data-kimi-click', '1');
+                return true;
+            """), "选择诊断查询", timeout=5, quiet=True, record=False)
+            time.sleep(0.5)
+        # 选择器切到「诊断查询」后，后面的输入框 name 变成 ZYZD。
+        # 多个关键词逐个查询，结果合并去重（GHXH 挂号序号）后存同一个 Excel
+        KEYWORDS = ["月经延长", "停经", "孕", "妊娠", "胚胎", "试管",
+                    "黄体", "流产", "先兆", "人流", "药流", "辅助"]
+        all_rows, seen_gxh = [], set()
+        if clr_ok and zd_ok:
+            for kw in KEYWORDS:
+                if not type_field(page, "ZYZD", kw, f"诊断查询={kw}"):
+                    continue
+                if not search_and_wait(page, f"搜索 诊断含{kw}"):
+                    continue
+                rows = scrape_all(page, f"爬取 诊断含{kw}")
+                if not rows:
+                    continue
+                for r in rows:
+                    key = str(r.get("GHXH") or "") or (str(r.get("MZHM") or "") + str(r.get("GHSJ") or ""))
+                    if key and key not in seen_gxh:
+                        seen_gxh.add(key)
+                        all_rows.append(r)
+            save_excel(all_rows, f"妇保-诊断含孕_{ym}.xlsx",
+                       f"诊断关键词筛查名单（{len(KEYWORDS)}个关键词合并去重）")
 
         # ========== 汇总 ==========
         print("=" * 40)
