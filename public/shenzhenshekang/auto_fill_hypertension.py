@@ -6,14 +6,17 @@
 流程：
 1. 收集病历首页数据（血压、脉搏、体重）
 2. 点击高血压按钮，进入随访弹窗
-3. 采集医防融合问卷信息（如无则从健康检查表采集）
-4. 填写高血压随访问卷
+3. 采集医防融合问卷信息（如无则从健康检查表采集；体检表也无记录的首次随访患者，
+   从高血压患者档案的用药表格收集目前用药）
+4. 填写高血压随访问卷（既往史默认勾选高血压；第一次血压>140/90 时第二次填140/90左右，
+   两次相差>=20 时第三次也填140/90左右）
 5. 保存
 """
 
 from playwright.sync_api import sync_playwright
 import time
 import re
+import random
 
 def pick_combo_item(page, trigger_xpath, match_text):
     """真实鼠标点击 ExtJS 下拉框的触发箭头，等待选项列表出现后点击包含 match_text 的选项。
@@ -429,13 +432,21 @@ def fill_hypertension():
             time.sleep(2)
 
             # ========== 选择第一行记录（最近的体检） ==========
+            # 健康体检表记录列表是表头含"年检日期"的表格（左侧窄表）。
+            # 首次随访患者可能没有任何体检记录（行数=0），此时不点行，
+            # 8.4 仍返回默认值，8.4b 改从高血压患者档案收集目前用药
             print("8.3 选择最近的体检记录...")
-            page.evaluate("""
+            exam_rows = page.evaluate("""
                 () => {
-                    const rows = document.querySelectorAll('div.x-grid3-row');
-                    if (rows.length > 0) {
-                        rows[0].click();
-                    }
+                    const grids = [...document.querySelectorAll('.x-grid3')];
+                    const g = grids.find(g => {
+                        const headers = [...g.querySelectorAll('.x-grid3-hd-inner')].map(h => (h.textContent || '').trim());
+                        return headers.includes('年检日期');
+                    });
+                    if (!g) return 0;
+                    const rows = g.querySelectorAll('.x-grid3-row');
+                    if (rows.length > 0) rows[0].click();
+                    return rows.length;
                 }
             """)
             time.sleep(2)
@@ -569,6 +580,57 @@ def fill_hypertension():
             print(f"  摄盐={personal_info['salt']}, 心理={personal_info['psychology']}, 遵医={personal_info['obeyDoctor']}")
             if medication:
                 print(f"  目前用药：{medication.replace(chr(10), ', ')}")
+
+            # ========== 8.4b 体检表无记录时，从高血压患者档案收集目前用药 ==========
+            # 首次随访患者没有健康体检记录，目前用药从"高血压患者档案"标签页的
+            # 用药表格收集（表头：药物名称/次数/每次剂量/剂量单位）
+            if exam_rows == 0:
+                print("8.4b 健康体检表无记录，从高血压患者档案收集目前用药...")
+                page.evaluate("""
+                    () => {
+                        const tabs = document.querySelectorAll('li');
+                        for (let tab of tabs) {
+                            const textSpan = tab.querySelector('span.x-tab-strip-text');
+                            if (textSpan && textSpan.textContent.trim() === '高血压患者档案') {
+                                const a = tab.querySelector('a.x-tab-right');
+                                if (a) { a.click(); return true; }
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                time.sleep(3)
+                archive_meds = page.evaluate("""
+                    () => {
+                        const grids = [...document.querySelectorAll('.x-grid3')];
+                        const g = grids.find(g => {
+                            const headers = [...g.querySelectorAll('.x-grid3-hd-inner')].map(h => (h.textContent || '').trim());
+                            return headers.includes('药物名称') && headers.includes('每次剂量');
+                        });
+                        if (!g) return '';
+                        const headers = [...g.querySelectorAll('.x-grid3-hd-inner')].map(h => (h.textContent || '').trim());
+                        const iName = headers.indexOf('药物名称');
+                        const iDose = headers.indexOf('每次剂量');
+                        const iUnit = headers.indexOf('剂量单位');
+                        const iTimes = headers.indexOf('次数');
+                        const timesMap = {'1': '每日1次', '2': '每日2次', '3': '每日3次'};
+                        const meds = [];
+                        g.querySelectorAll('.x-grid3-row').forEach(row => {
+                            const cells = [...row.querySelectorAll('.x-grid3-cell-inner')].map(c => (c.textContent || '').trim());
+                            const name = cells[iName];
+                            if (!name) return;
+                            const dose = ((cells[iDose] || '') + (cells[iUnit] || '')).trim();
+                            const freq = timesMap[cells[iTimes]] || '每日1次';
+                            meds.push((name + ' ' + dose + ' ' + freq).trim());
+                        });
+                        return meds.join('\\n');
+                    }
+                """)
+                if archive_meds:
+                    medication = archive_meds
+                    print(f"  从档案收集到用药：{medication.replace(chr(10), ', ')}")
+                else:
+                    print("  档案中未找到用药记录")
 
             # ========== 关闭健康检查表弹窗，返回 ==========
             print("8.5 关闭健康检查表弹窗...")
@@ -704,6 +766,10 @@ def fill_hypertension():
 
         # 新发疾病情况 - 无 (pastHistory_02_1101)
         page.evaluate("() => { const inp = document.getElementById('pastHistory_02_1101'); if (inp && !inp.checked) inp.click(); }")
+        time.sleep(0.5)
+
+        # 既往史 - 高血压 (pastHistory_02_0202)：高血压随访问卷默认勾选
+        page.evaluate("() => { const inp = document.getElementById('pastHistory_02_0202'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
         # 个人史 - 吸烟 (smokingHistory: 0=几乎每天，1=偶尔，2=已戒烟，3=从不吸烟)
@@ -915,6 +981,63 @@ def fill_hypertension():
                 """)
         time.sleep(0.5)
 
+        # 第二次/第三次血压 (systolicP_S/diastolicP_S, systolicP_T/diastolicP_T)：
+        # 第一次血压>140/90 时需测第二次，血压在 135-145/85-95 范围内随机（140/90 左右）；
+        # 第一次与第二次相差>=20 时需测第三次，同样范围内随机。
+        # 第二/三次血压后面的心率（HEARTRATE2/HEARTRATE3）也要填：在原心率基础上 ±2~5
+        if bp_text:
+            bp_parts = bp_text.split('/')
+            if len(bp_parts) == 2:
+                try:
+                    sys1, dia1 = float(bp_parts[0]), float(bp_parts[1])
+                except ValueError:
+                    sys1, dia1 = None, None
+                try:
+                    hr1 = int(float(pulse_text)) if pulse_text else None
+                except ValueError:
+                    hr1 = None
+
+                def near_hr():
+                    """原心率 ±2~5 的随机值；取不到原心率返回空串不填"""
+                    if hr1 is None:
+                        return ''
+                    return str(hr1 + random.choice([2, 3, 4, 5]) * random.choice([-1, 1]))
+
+                if sys1 is not None and (sys1 > 140 or dia1 > 90):
+                    sys2, dia2 = random.randint(135, 145), random.randint(85, 95)
+                    hr2 = near_hr()
+                    print(f"  第一次血压 {bp_text} 超过140/90，第二次血压填 {sys2}/{dia2}，心率 {hr2 or '不填'}")
+                    page.evaluate(f"""
+                        () => {{
+                            const setVal = (id, v) => {{
+                                if (!v) return;
+                                const el = document.getElementById(id);
+                                if (el) {{ el.value = v; el.dispatchEvent(new Event('input', {{ bubbles: true }})); }}
+                            }};
+                            setVal('systolicP_S', '{sys2}');
+                            setVal('diastolicP_S', '{dia2}');
+                            setVal('HEARTRATE2', '{hr2}');
+                        }}
+                    """)
+                    time.sleep(0.5)
+                    if abs(sys1 - sys2) >= 20 or abs(dia1 - dia2) >= 20:
+                        sys3, dia3 = random.randint(135, 145), random.randint(85, 95)
+                        hr3 = near_hr()
+                        print(f"  第一次与第二次血压相差>=20，第三次血压填 {sys3}/{dia3}，心率 {hr3 or '不填'}")
+                        page.evaluate(f"""
+                            () => {{
+                                const setVal = (id, v) => {{
+                                    if (!v) return;
+                                    const el = document.getElementById(id);
+                                    if (el) {{ el.value = v; el.dispatchEvent(new Event('input', {{ bubbles: true }})); }}
+                                }};
+                                setVal('systolicP_T', '{sys3}');
+                                setVal('diastolicP_T', '{dia3}');
+                                setVal('HEARTRATE3', '{hr3}');
+                            }}
+                        """)
+                        time.sleep(0.5)
+
         # 血压 - 收缩压/舒张压 (SSY / SZY)，数值与第一次血压相同
         if bp_text:
             bp_parts = bp_text.split('/')
@@ -1057,11 +1180,11 @@ def fill_hypertension():
         if med_entries:
             print(f"填写目前用药：{', '.join(e['name'] for e in med_entries)}")
             # 先清空表格中残留的行（含上次运行已填的），下面会按最新清单重新填，避免重复
+            # 注意：id=chisMedicineTTr2 的行是隐藏模板（display:none），真正的用药表格是
+            # "增加"按钮所在的无id表格；两种表都存在，所以全页面按 input[name^=drugNames] 找行
             page.evaluate("""
                 () => {
-                    const tbl = document.getElementById('chisMedicineTTr2');
-                    if (!tbl) return;
-                    [...tbl.querySelectorAll('input[name^="drugNames"]')].forEach(inp => {
+                    [...document.querySelectorAll('input[name^="drugNames"]')].forEach(inp => {
                         const tr = inp.closest('tr');
                         const del = tr ? [...tr.querySelectorAll('a')].find(a => a.textContent.includes('删除')) : null;
                         if (del) del.click();
@@ -1085,20 +1208,28 @@ def fill_hypertension():
                 elif '每日3次' in freq_text:
                     freq_key = 'tid'
 
-                # 点击"增加"前记录现有行数
+                # 点击"增加"前记录现有行数（全页面统计，隐藏模板行里没有 drugNames 输入框）
                 prev_count = page.evaluate("""
-                    () => {
-                        const tbl = document.getElementById('chisMedicineTTr2');
-                        return tbl ? tbl.querySelectorAll('input[name^="drugNames"]').length : -1;
-                    }
+                    () => document.querySelectorAll('input[name^="drugNames"]').length
                 """)
-                if prev_count < 0:
-                    print("  警告：未找到目前用药表格")
-                    break
                 page.evaluate("""
                     () => {
-                        const btn = document.getElementById('chisAddButton1')
-                                 || document.querySelector('button.chisAddMedical');
+                        // chisAddButton1 是隐藏模板副本（点了没用），真正的"增加"是可见的
+                        // chisAddButton；在候选里挑第一个可见的点
+                        const vis = el => {
+                            const r = el.getBoundingClientRect();
+                            if (r.width === 0 || r.height === 0) return false;
+                            let a = el;
+                            while (a && a !== document.body) {
+                                if (window.getComputedStyle(a).display === 'none') return false;
+                                a = a.parentElement;
+                            }
+                            return true;
+                        };
+                        const cands = [document.getElementById('chisAddButton'),
+                                       document.getElementById('chisAddButton1'),
+                                       document.querySelector('button.chisAddMedical')];
+                        const btn = cands.find(b => b && vis(b));
                         if (btn) btn.click();
                     }
                 """)
@@ -1107,9 +1238,7 @@ def fill_hypertension():
                 # 取第一个新行填写（返回其真实序号），多余的新空行立即删除，否则无法保存
                 row_idx = page.evaluate("""
                     (prevCount) => {
-                        const tbl = document.getElementById('chisMedicineTTr2');
-                        if (!tbl) return -1;
-                        const inputs = [...tbl.querySelectorAll('input[name^="drugNames"]')];
+                        const inputs = [...document.querySelectorAll('input[name^="drugNames"]')];
                         const news = inputs.slice(prevCount);
                         if (!news.length) return -1;
                         for (let i = 1; i < news.length; i++) {
@@ -1159,10 +1288,23 @@ def fill_hypertension():
                     f'xpath=//div[@id="div_usage{row_idx}"]//img[contains(@class,"x-form-trigger")]',
                     '按说明书口服')
                 time.sleep(0.5)
-                picked_comp = pick_combo_item(
-                    page,
-                    f'xpath=//input[@name="drugNames{row_idx}"]/ancestor::tr[1]/td[5]//img[contains(@class,"x-form-trigger")]',
-                    '规律服药')
+                # 依从性下拉：只有含"依从性"列的旧版用药表格才有；朱笑立这类新版表格
+                # 第5列是"删除"（无下拉箭头），直接跳过，避免白等30秒超时
+                picked_comp = None
+                has_comp = page.evaluate(f"""
+                    () => {{
+                        const inp = document.querySelector('input[name="drugNames{row_idx}"]');
+                        const tr = inp ? inp.closest('tr') : null;
+                        if (!tr) return false;
+                        const tds = tr.querySelectorAll('td');
+                        return tds.length >= 6 && !!tds[4].querySelector('img.x-form-trigger');
+                    }}
+                """)
+                if has_comp:
+                    picked_comp = pick_combo_item(
+                        page,
+                        f'xpath=//input[@name="drugNames{row_idx}"]/ancestor::tr[1]/td[5]//img[contains(@class,"x-form-trigger")]',
+                        '规律服药')
                 print(f"  已填写第 {row_idx + 1} 行：药名={med_name} 剂量={med_dose} 频次={picked_freq} 用法={picked_usage} 依从性={picked_comp}")
                 time.sleep(0.5)
 

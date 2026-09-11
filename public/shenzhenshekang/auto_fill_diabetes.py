@@ -749,38 +749,43 @@ def fill_diabetes():
         # ========== 9. 辅助检查-血糖：填入空腹，清空随机 ==========
         # 问卷字段ID后缀随表单实例变化（如 fbs_GFAI4），用 id前缀 + 可见性过滤定位，
         # 避开首页的 FBS（大写）和建卡页的 ext-comp-XXXX 隐藏输入框
+        # 注意：即使病历首页没采到血糖也要执行——"复制随访记录/引用共享数据"可能把
+        # 上次的随机血糖旧值带进问卷（如何万宝的 8.5），不清掉就会残留错误数据
         if blood_sugar_value:
-            print(f"13. 填入血糖值 {blood_sugar_value}...")
-            run_step(page, f"""
-                () => {{
-                    const visOk = el => {{
-                        const r = el.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) return false;
-                        let a = el;
-                        while (a && a !== document.body) {{
-                            if (window.getComputedStyle(a).display === 'none') return false;
-                            a = a.parentElement;
-                        }}
-                        return true;
-                    }};
-                    const fbsInp = Array.from(document.querySelectorAll('input[id^="fbs_"]')).find(visOk);
-                    const pbsInp = Array.from(document.querySelectorAll('input[id^="pbs_"]')).find(visOk);
-                    if (!fbsInp && !pbsInp) return false;
-                    if (fbsInp) {{
-                        fbsInp.value = {json.dumps(blood_sugar_value)};
-                        fbsInp.style.color = "#000";
-                        fbsInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-                    if (pbsInp) {{
-                        pbsInp.value = "";
-                        pbsInp.style.color = "#000";
-                        pbsInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-                    return !fbsInp || fbsInp.value === {json.dumps(blood_sugar_value)};
-                }}
-            """, "填入辅助检查血糖")
+            print(f"13. 填入血糖值 {blood_sugar_value}，并清空随机血糖旧值...")
         else:
-            print("13. 病历首页无血糖值，跳过辅助检查血糖填写")
+            print("13. 病历首页无血糖值，清空随机血糖旧值...")
+        run_step(page, f"""
+            () => {{
+                const visOk = el => {{
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    let a = el;
+                    while (a && a !== document.body) {{
+                        if (window.getComputedStyle(a).display === 'none') return false;
+                        a = a.parentElement;
+                    }}
+                    return true;
+                }};
+                const fbsInp = Array.from(document.querySelectorAll('input[id^="fbs_"]')).find(visOk);
+                const pbsInp = Array.from(document.querySelectorAll('input[id^="pbs_"]')).find(visOk);
+                if (!fbsInp && !pbsInp) return false;
+                const newVal = {json.dumps(blood_sugar_value)};
+                if (fbsInp && newVal) {{
+                    fbsInp.value = newVal;
+                    fbsInp.style.color = "#000";
+                    fbsInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                if (pbsInp) {{
+                    pbsInp.value = "";
+                    pbsInp.style.color = "#000";
+                    pbsInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                // 填了空腹要回读校验；随机血糖必须确认为空才算成功
+                return (!fbsInp || !newVal || fbsInp.value === newVal)
+                    && (!pbsInp || pbsInp.value === "");
+            }}
+        """, "填入辅助检查血糖并清空随机血糖")
 
         # ========== 10. 随访分类：按血糖值判定 ==========
         # ID后缀同样随表单实例变化（如 visitType_1_GFAI4），用前缀 + 可见性过滤
@@ -952,6 +957,36 @@ def fill_diabetes():
                 return false;
             }
         """, "保存问卷-确定 (F1)")
+
+        # ========== 12.5 关闭"建议转诊"提示弹窗（如有） ==========
+        # 点击确定保存问卷后，若血糖超出控制目标，系统可能弹
+        # "温馨提示：鉴于你当前的情况，我们建议您转诊！"对话框，
+        # 不关会挡住后面的健康教育操作。点弹窗右上角 X 关闭（只做关闭，不触发转诊选择）。
+        # 先做一次即时检测，没弹窗就直接跳过，避免无弹窗时白等超时
+        referral_tip_find_js = r"""
+            () => {
+                const wins = Array.from(document.querySelectorAll('.x-window, .x-window-dlg'));
+                const win = wins.find(w => {
+                    const s = window.getComputedStyle(w);
+                    const r = w.getBoundingClientRect();
+                    if (s.display === 'none' || s.visibility === 'hidden' || r.width === 0) return false;
+                    if (r.x < -100 || r.y < -100) return false;
+                    if (w.classList.contains('x-window-maximized')) return false;
+                    return (w.textContent || '').includes('建议您转诊');
+                });
+                if (!win) return false;
+                const closer = win.querySelector('.x-tool-close');
+                if (!closer) return false;
+                closer.setAttribute('data-kimi-click', '1');
+                return true;
+            }
+        """
+        try:
+            has_referral_tip = page.evaluate(referral_tip_find_js)
+        except Exception:
+            has_referral_tip = False
+        if has_referral_tip:
+            run_click(page, referral_tip_find_js, "关闭建议转诊弹窗")
 
         # ========== 13. 健康教育弹窗 ==========
         print("17. 处理健康教育...")
