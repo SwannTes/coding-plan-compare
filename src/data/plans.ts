@@ -37,7 +37,7 @@ export const platforms: Platform[] = [
         note: "包季 8 折 · 包年 7 折",
         badge: "轻量级",
         badgeColor: "rgba(79,110,247,.15)",
-        features: ["GLM-5.3/5-Turbo/4.7", "2,000 积分/5h + 1 万/周", "含 MCP 工具"],
+        features: ["GLM-5.3 / 5.3-Flash", "2,000 积分/5h + 1 万/周", "含 MCP 工具"],
       },
       {
         name: "Pro",
@@ -58,8 +58,8 @@ export const platforms: Platform[] = [
         features: ["14x Lite 额度", "2.8 万积分/5h + 14 万/周", "高峰期专属资源优先保障"],
       },
     ],
-    highlights: ["GLM-5.3 新旗舰，积分制计费", "套餐含 MCP 工具额度", "包季 8 折 / 包年 7 折"],
-    models: ["GLM-5.3", "GLM-5-Turbo", "GLM-4.7"],
+    highlights: ["GLM-5.3 + 5.3-Flash 双模型", "夜间 23:00-09:00 Flash 畅用", "套餐含 MCP 工具额度", "包季 8 折 / 包年 7 折"],
+    models: ["GLM-5.3", "GLM-5.3-Flash"],
   },
   {
     id: "minimax",
@@ -175,8 +175,8 @@ export const platforms: Platform[] = [
         features: ["5 倍于 Lite 用量", "用量为 Claude Max 数倍", "满足大规模编程需求"],
       },
     ],
-    highlights: ["8 款模型自由切换 + Auto", "邀请好友享 9.5 折", "包季同价更灵活"],
-    models: ["GLM-5.3", "GLM-5.3-Flash", "Kimi-K2.7-Code", "DeepSeek-V4-Pro", "DeepSeek-V4-Flash", "Doubao-Seed-2.1-Turbo", "Doubao-Seed-Evolving", "MiniMax-M3"],
+    highlights: ["9 款模型自由切换 + Auto", "邀请好友享 9.5 折", "包季同价更灵活"],
+    models: ["GLM-5.3", "GLM-5.3-Flash", "Kimi-K3", "Kimi-K2.7-Code", "DeepSeek-V4-Pro", "DeepSeek-V4-Flash", "Doubao-Seed-2.1-Turbo", "Doubao-Seed-Evolving", "MiniMax-M3"],
   },
   {
     id: "aliyun",
@@ -244,7 +244,7 @@ export const platforms: Platform[] = [
         features: ["积分制计量", "Auto 智能路由", "GLM-5.3 / DeepSeek-V4 等"],
       },
     ],
-    highlights: ["原 Coding Plan 已停售", "积分制计量（8/31 起）", "Auto 路由 + 11 款模型"],
+    highlights: ["原 Coding Plan 已停售", "积分制计量（8/31 起）", "9 月限时：指定模型抵扣 5 折", "Auto 路由 + 11 款模型"],
     models: ["Auto", "GLM-5.3", "GLM-5.2", "GLM-5.1", "GLM-5", "DeepSeek-V4-Pro", "DeepSeek-V4-Flash", "MiniMax-M3", "MiniMax-M2.7", "Kimi-K2.7-Code", "Hy4-Preview"],
   },
   {
