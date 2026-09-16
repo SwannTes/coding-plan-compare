@@ -764,12 +764,34 @@ def fill_hypertension():
         page.evaluate("() => { const inp = document.getElementById('newCurrentSymptoms_9'); if (inp && !inp.checked) inp.click(); }")
         time.sleep(0.5)
 
-        # 新发疾病情况 - 无 (pastHistory_02_1101)
-        page.evaluate("() => { const inp = document.getElementById('pastHistory_02_1101'); if (inp && !inp.checked) inp.click(); }")
+        # 既往史 - 高血压 (pastHistory_02_0202)：高血压随访问卷默认勾选。
+        # 注意：该复选框在表单里处于隐藏区块（不可见），隐藏时必须跳过——
+        # 页面JS里它与"新发疾病情况-无"(pastHistory_02_1101)互斥，点它会把"无"取消掉；
+        # 因此必须先点它（可见时）、后点"无"
+        page.evaluate("""
+            () => {
+                const inp = document.getElementById('pastHistory_02_0202');
+                if (!inp || inp.checked) return;
+                const r = inp.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) inp.click();
+            }
+        """)
         time.sleep(0.5)
 
-        # 既往史 - 高血压 (pastHistory_02_0202)：高血压随访问卷默认勾选
-        page.evaluate("() => { const inp = document.getElementById('pastHistory_02_0202'); if (inp && !inp.checked) inp.click(); }")
+        # 新发疾病情况 - 无 (pastHistory_02_1101)。
+        # 必须在既往史之后点（两者互斥，后点的生效）；点完校验一次确保勾上
+        for _ in range(2):
+            ok = page.evaluate("""
+                () => {
+                    const inp = document.getElementById('pastHistory_02_1101');
+                    if (!inp) return true;
+                    if (!inp.checked) { inp.click(); return false; }
+                    return true;
+                }
+            """)
+            if ok:
+                break
+            time.sleep(0.3)
         time.sleep(0.5)
 
         # 个人史 - 吸烟 (smokingHistory: 0=几乎每天，1=偶尔，2=已戒烟，3=从不吸烟)

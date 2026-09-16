@@ -47,39 +47,132 @@ async def keep_alive(page):
     except Exception as e:
         log(f"防掉线活动失败: {e}")
 
+# "疫苗健康处方"弹窗相关JS。该系统是 Element Plus：弹窗结构为 .el-overlay > .el-dialog，
+# 关闭的弹窗 display:none（getBoundingClientRect 宽为0），以此判断弹窗是否可见。
+DIALOG_OPEN_JS = """
+    () => {
+        for (const d of document.querySelectorAll('.el-dialog')) {
+            if (d.getBoundingClientRect().width === 0) continue;
+            const title = d.querySelector('.el-dialog__title');
+            if (title && title.textContent.includes('疫苗健康处方')) return true;
+        }
+        return false;
+    }
+"""
+
+CLOSE_DIALOG_JS = """
+    () => {
+        const dialogs = document.querySelectorAll('.el-dialog');
+        for (let d of dialogs) {
+            const r = d.getBoundingClientRect();
+            const wrapper = d.closest('.el-dialog__wrapper, .el-overlay');
+            const wrapperVisible = wrapper ?
+                window.getComputedStyle(wrapper).display !== 'none' : true;
+            if (r.width === 0 || !wrapperVisible) continue;
+            const title = d.querySelector('.el-dialog__title');
+            if (!title || !title.textContent.includes('疫苗健康处方')) continue;
+            const btns = d.querySelectorAll('button');
+            for (let b of btns) {
+                if ((b.textContent || '').trim() === '取消') {
+                    b.click();
+                    return 'CLICKED';
+                }
+            }
+            return 'NO_CANCEL_BUTTON';
+        }
+        return 'NO_DIALOG';
+    }
+"""
+
+async def close_prescription_dialog(page):
+    """若'疫苗健康处方'弹窗还开着，点取消关掉（找不到取消按钮则按ESC）。"""
+    try:
+        result = await asyncio.wait_for(page.evaluate(CLOSE_DIALOG_JS), timeout=15)
+        if result == 'CLICKED':
+            log("已关闭疫苗健康处方弹窗")
+            await asyncio.sleep(0.5)
+        elif result == 'NO_CANCEL_BUTTON':
+            log("弹窗内未找到取消按钮，尝试按ESC")
+            await page.keyboard.press("Escape")
+    except asyncio.TimeoutError:
+        log("关闭弹窗超时（页面可能被冻结），跳过")
+    except Exception as e:
+        log(f"关闭弹窗失败: {e}")
+
 async def find_unprescribed_patient(page):
-    """查找有未开处方标志的患者（按就诊顺序：先来先处理）"""
+    """查找有未开处方标志的患者并点击其疫苗处方按钮（按就诊顺序：先来先处理）。
+    列表分页时逐页翻找：当前页没有就点下一页，直到最后一页。"""
     log("查找有未开处方标志的患者...")
 
-    # 查找所有包含"未开处方"的患者行，反转顺序（最早的在前）
-    try:
-        elements = await page.query_selector_all('text=未开处方')
-        if elements:
-            # 反转列表，让最早就诊的患者先被处理
-            elements = list(reversed(elements))
-            for el in elements:
-                if await el.is_visible():
-                    # 使用JavaScript点击疫苗处方按钮
-                    await page.evaluate("""
-                        (ele) => {
-                            let curr = ele;
-                            while (curr) {
-                                if (curr.textContent && curr.textContent.includes('疫苗处方')) {
-                                    const btns = curr.querySelectorAll('.case_analysis');
-                                    for (let b of btns) {
-                                        if (b.innerText.includes('疫苗处方')) {
-                                            b.click();
-                                            return;
-                                        }
-                                    }
-                                }
-                                curr = curr.parentElement;
+    # 只取包含"未开处方"的最内层元素（避免父子重复匹配），倒序遍历，最早就诊的先处理；
+    # 点击有返回值，没点到不会假报成功
+    CLICK_JS = """
+        () => {
+            const visible = (el) => {
+                if (el.getBoundingClientRect().width === 0) return false;
+                for (let p = el; p; p = p.parentElement) {
+                    if (p.style && p.style.display === 'none') return false;
+                }
+                return true;
+            };
+            const all = Array.from(document.querySelectorAll('body *'))
+                .filter(el => (el.textContent || '').includes('未开处方'));
+            const marks = all.filter(el => !all.some(o => o !== el && el.contains(o)));
+            for (let i = marks.length - 1; i >= 0; i--) {
+                if (!visible(marks[i])) continue;
+                let curr = marks[i];
+                while (curr) {
+                    if (curr.textContent && curr.textContent.includes('疫苗处方')) {
+                        const btns = curr.querySelectorAll('.case_analysis');
+                        for (let b of btns) {
+                            if (b.innerText.includes('疫苗处方')) {
+                                b.click();
+                                return 'CLICKED';
                             }
                         }
-                    """, el)
-                    await asyncio.sleep(1)
-                    log("点击未开处方患者")
-                    return True
+                    }
+                    curr = curr.parentElement;
+                }
+            }
+            return 'NOT_FOUND';
+        }
+    """
+
+    NEXT_PAGE_JS = """
+        () => {
+            const pager = document.querySelector('.el-pagination');
+            if (!pager || pager.offsetParent === null) return 'NO_PAGER';
+            const next = pager.querySelector('button.btn-next');
+            if (!next || next.disabled || next.classList.contains('is-disabled')) return 'LAST_PAGE';
+            const active = pager.querySelector('.el-pager li.active, .el-pager li.is-active');
+            window.__vaccinePageNo = active ? active.textContent.trim() : '';
+            next.click();
+            return 'CLICKED';
+        }
+    """
+
+    CUR_PAGE_JS = """
+        () => {
+            const a = document.querySelector('.el-pagination .el-pager li.active, .el-pagination .el-pager li.is-active');
+            return a ? a.textContent.trim() : '';
+        }
+    """
+
+    try:
+        for _ in range(20):  # 页数兜底，防异常死循环
+            if await page.evaluate(CLICK_JS) == 'CLICKED':
+                await asyncio.sleep(1)
+                log("点击未开处方患者")
+                return True
+            # 当前页没有未开处方患者，翻下一页继续找
+            if await page.evaluate(NEXT_PAGE_JS) != 'CLICKED':
+                break
+            # 等页码变化确认翻页完成（最多5秒）
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                if await page.evaluate(CUR_PAGE_JS) != await page.evaluate("() => window.__vaccinePageNo"):
+                    break
+            log("当前页无未开处方患者，已翻到下一页继续找")
     except Exception as e:
         log(f"查找失败: {e}")
 
@@ -91,6 +184,9 @@ async def process_vaccine_prescription(page, browser):
     log("开始处理疫苗处方...")
 
     try:
+        # 0. 上一轮异常退出可能遗留开着的弹窗（会挡住页面所有点击），先关掉再开始
+        await close_prescription_dialog(page)
+
         # 1. 点击有未开处方标志的患者
         log("步骤1: 查找并点击未开处方患者")
         if not await find_unprescribed_patient(page):
@@ -101,8 +197,7 @@ async def process_vaccine_prescription(page, browser):
         log("步骤2: 点击疫苗处方按钮")
 
         # 检查弹窗是否已经打开（疫苗健康处方弹窗）
-        dialog = await page.query_selector('.el-overlay.el-modal-dialog')
-        if dialog:
+        if await page.evaluate(DIALOG_OPEN_JS):
             log("检测到疫苗处方弹窗已打开，跳过点击疫苗处方按钮")
         else:
             # 方法1: 通过class="case_analysis" + text="疫苗处方"
@@ -111,7 +206,7 @@ async def process_vaccine_prescription(page, browser):
                 elements = await page.query_selector_all('.case_analysis')
                 for el in elements:
                     if '疫苗处方' in await el.inner_text():
-                        await el.click()
+                        await el.click(timeout=3000)
                         log("点击疫苗处方按钮 (class=case_analysis)")
                         found = True
                         break
@@ -124,7 +219,7 @@ async def process_vaccine_prescription(page, browser):
                     elements = await page.query_selector_all('div')
                     for el in elements:
                         if await el.is_visible() and '疫苗处方' in await el.inner_text():
-                            await el.click()
+                            await el.click(timeout=3000)
                             log("点击疫苗处方按钮 (div text)")
                             found = True
                             break
@@ -137,7 +232,7 @@ async def process_vaccine_prescription(page, browser):
                 for btn in buttons:
                     text = await btn.inner_text()
                     if "处方" in text:
-                        await btn.click()
+                        await btn.click(timeout=3000)
                         log(f"点击处方按钮: {text.strip()}")
                         found = True
                         break
@@ -258,6 +353,8 @@ async def process_vaccine_prescription(page, browser):
 
             if not target_id:
                 log("失败：多次点击打印均未弹出预览页，本次未打印")
+                # 失败也要关掉弹窗，否则遗留的弹窗会挡住后续所有轮次的点击
+                await close_prescription_dialog(page)
                 return False
 
             # 在预览页点"取消"（本次不真正打印）。
@@ -349,45 +446,14 @@ async def process_vaccine_prescription(page, browser):
                         break
                 else:
                     log("警告：预览页关不掉，后续操作可能卡死，请手动关闭")
+                    await close_prescription_dialog(page)
                     return False
         except Exception as e:
             log(f"点击打印失败: {e}")
 
         # 5. 点击取消关闭弹窗（只在可见的"疫苗健康处方"弹窗内找取消，避免点错同名按钮）
         log("步骤5: 关闭弹窗")
-        try:
-            cancel_result = await asyncio.wait_for(page.evaluate("""
-                () => {
-                    const dialogs = document.querySelectorAll('.el-dialog');
-                    for (let d of dialogs) {
-                        const r = d.getBoundingClientRect();
-                        const wrapper = d.closest('.el-dialog__wrapper, .el-overlay');
-                        const wrapperVisible = wrapper ?
-                            window.getComputedStyle(wrapper).display !== 'none' : true;
-                        if (r.width === 0 || !wrapperVisible) continue;
-                        const title = d.querySelector('.el-dialog__title');
-                        if (!title || !title.textContent.includes('疫苗健康处方')) continue;
-                        const btns = d.querySelectorAll('button');
-                        for (let b of btns) {
-                            if ((b.textContent || '').trim() === '取消') {
-                                b.click();
-                                return 'CLICKED';
-                            }
-                        }
-                        return 'NO_CANCEL_BUTTON';
-                    }
-                    return 'NO_DIALOG';
-                }
-            """), timeout=15)
-            if cancel_result == 'CLICKED':
-                log("点击取消成功")
-            else:
-                log(f"取消按钮未点到({cancel_result})，尝试按ESC")
-                await page.keyboard.press("Escape")
-        except asyncio.TimeoutError:
-            log("关闭弹窗超时（页面可能被冻结），跳过本次")
-        except Exception as e:
-            log(f"关闭弹窗失败: {e}")
+        await close_prescription_dialog(page)
 
         await asyncio.sleep(0.5)
 
@@ -396,6 +462,8 @@ async def process_vaccine_prescription(page, browser):
 
     except Exception as e:
         log(f"处理出错: {e}")
+        # 异常退出前尽量关掉弹窗，避免残留弹窗卡死后续轮次
+        await close_prescription_dialog(page)
         return False
 
 async def main_async():

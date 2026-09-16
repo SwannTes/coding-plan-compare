@@ -750,11 +750,13 @@ def fill_diabetes():
         # 问卷字段ID后缀随表单实例变化（如 fbs_GFAI4），用 id前缀 + 可见性过滤定位，
         # 避开首页的 FBS（大写）和建卡页的 ext-comp-XXXX 隐藏输入框
         # 注意：即使病历首页没采到血糖也要执行——"复制随访记录/引用共享数据"可能把
-        # 上次的随机血糖旧值带进问卷（如何万宝的 8.5），不清掉就会残留错误数据
+        # 上次的旧值带进问卷（如何万宝的随机血糖8.5、敖正清的空腹9.2）。
+        # 病历没测血糖时，空腹血糖按规范默认填5.9（覆盖导入的旧值）
         if blood_sugar_value:
             print(f"13. 填入血糖值 {blood_sugar_value}，并清空随机血糖旧值...")
         else:
-            print("13. 病历首页无血糖值，清空随机血糖旧值...")
+            blood_sugar_value = '5.9'
+            print("13. 病历首页无血糖值，空腹血糖默认填5.9，并清空随机血糖旧值...")
         run_step(page, f"""
             () => {{
                 const visOk = el => {{
@@ -786,6 +788,155 @@ def fill_diabetes():
                     && (!pbsInp || pbsInp.value === "");
             }}
         """, "填入辅助检查血糖并清空随机血糖")
+
+        # ========== 9.5 无既往随访记录时补填默认项 ==========
+        # 首次随访患者（如唐伟全）没有历史记录可复制/引用，症状、生活方式指导等会留空
+        # 导致无法保存。以下各项只在"空着/未选"时补默认值，导入来的已有值一律不覆盖
+        print("13.5 检查空白项并补填默认值（症状/生活方式/依从性等）...")
+
+        def _dm_fill_group_if_blank(name, value, desc):
+            """单选/复选组：可见项都没选中时才点指定value的项；已有值跳过"""
+            r = page.evaluate(f"""
+                () => {{
+                    const visOk = el => {{
+                        if (el.getBoundingClientRect().width === 0) return false;
+                        let a = el;
+                        while (a && a !== document.body) {{
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }}
+                        return true;
+                    }};
+                    const grp = Array.from(document.querySelectorAll('input[name="{name}"]')).filter(visOk);
+                    if (!grp.length) return 'NO_GROUP';
+                    if (grp.some(x => x.checked)) return 'HAS_VALUE';
+                    const t = grp.find(x => x.value === '{value}');
+                    if (!t) return 'NO_TARGET';
+                    t.click();
+                    return t.checked ? 'OK' : 'CLICK_FAILED';
+                }}
+            """)
+            if r == 'OK':
+                print(f"  [补填] {desc}")
+            elif r == 'HAS_VALUE':
+                print(f"  [已有值] {desc}，跳过")
+            else:
+                print(f"  [警告] {desc} 未处理（{r}）")
+
+        def _dm_fill_text_if_blank(name, value, desc):
+            """文本框：为空时才填默认值；已有值跳过"""
+            r = page.evaluate(f"""
+                () => {{
+                    const visOk = el => {{
+                        if (el.getBoundingClientRect().width === 0) return false;
+                        let a = el;
+                        while (a && a !== document.body) {{
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }}
+                        return true;
+                    }};
+                    const el = Array.from(document.querySelectorAll('input[name="{name}"]')).find(visOk);
+                    if (!el) return 'NO_FIELD';
+                    if ((el.value || '').trim()) return 'HAS_VALUE';
+                    el.value = '{value}';
+                    el.style.color = '#000';
+                    for (const t of ['input', 'change', 'blur']) {{
+                        el.dispatchEvent(new Event(t, {{ bubbles: true }}));
+                    }}
+                    return el.value === '{value}' ? 'OK' : 'WRITE_FAILED';
+                }}
+            """)
+            if r == 'OK':
+                print(f"  [补填] {desc}")
+            elif r == 'HAS_VALUE':
+                print(f"  [已有值] {desc}，跳过")
+            else:
+                print(f"  [警告] {desc} 未处理（{r}）")
+
+        # 症状：无症状（糖尿病问卷复选组 symptoms，value=1 为无症状）
+        _dm_fill_group_if_blank('symptoms', '1', '症状=无症状')
+        # 生活方式指导：日吸烟量 0/0，日饮酒量 0/0，主食 300/250
+        _dm_fill_text_if_blank('smokeCount', '0', '日吸烟量=0')
+        _dm_fill_text_if_blank('targetSmokeCount', '0', '日吸烟量目标=0')
+        _dm_fill_text_if_blank('drinkCount', '0', '日饮酒量=0')
+        _dm_fill_text_if_blank('targetDrinkCount', '0', '日饮酒量目标=0')
+        _dm_fill_text_if_blank('food', '300', '主食=300')
+        _dm_fill_text_if_blank('targetFood', '250', '主食目标=250')
+        # 心理调整=良好，遵医行为=良好（value=1）
+        _dm_fill_group_if_blank('psychologyChange', '1', '心理调整=良好')
+        _dm_fill_group_if_blank('obeyDoctor', '1', '遵医行为=良好')
+        # 服药依从性=规律（1），药物不良反应=无（1），低血糖反应=无（1）
+        _dm_fill_group_if_blank('medicine', '1', '服药依从性=规律')
+        _dm_fill_group_if_blank('adverseReactions', '1', '药物不良反应=无')
+        _dm_fill_group_if_blank('glycopenia', '1', '低血糖反应=无')
+
+        # 运动：当前值<7次/60分钟时，目标值=当前值+2次/+30分钟（封顶7/60）；
+        # 已达7/60则目标=当前值。目标已有值不覆盖（与高血压随访脚本同一规则）
+        sport = page.evaluate("""
+            () => {
+                const visOk = el => {
+                    if (el.getBoundingClientRect().width === 0) return false;
+                    let a = el;
+                    while (a && a !== document.body) {
+                        if (window.getComputedStyle(a).display === 'none') return false;
+                        a = a.parentElement;
+                    }
+                    return true;
+                };
+                const find = n => Array.from(document.querySelectorAll('input[name="' + n + '"]')).find(visOk);
+                const tgt1 = find('targetTrainTimesWeek'), tgt2 = find('targetTrainMinute');
+                if (!tgt1 && !tgt2) return null;
+                // 目标已有值则不覆盖
+                if ((tgt1 && tgt1.value.trim()) || (tgt2 && tgt2.value.trim())) return 'HAS_VALUE';
+                const cur1 = find('trainTimesWeek'), cur2 = find('trainMinute');
+                return {t: cur1 ? cur1.value.trim() : '', m: cur2 ? cur2.value.trim() : ''};
+            }
+        """)
+        if sport == 'HAS_VALUE':
+            print("  [已有值] 运动目标，跳过")
+        elif sport:
+            def _int0(s):
+                try:
+                    return int(float(str(s)))
+                except (TypeError, ValueError):
+                    return 0
+            cur_t, cur_m = _int0(sport['t']), _int0(sport['m'])
+            if cur_t >= 7 and cur_m >= 60:
+                new_t, new_m = cur_t, cur_m
+            else:
+                new_t, new_m = min(cur_t + 2, 7), min(cur_m + 30, 60)
+            page.evaluate(f"""
+                () => {{
+                    const visOk = el => {{
+                        if (el.getBoundingClientRect().width === 0) return false;
+                        let a = el;
+                        while (a && a !== document.body) {{
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }}
+                        return true;
+                    }};
+                    const find = n => Array.from(document.querySelectorAll('input[name="' + n + '"]')).find(visOk);
+                    const setVal = (el, v) => {{
+                        if (!el) return;
+                        el.value = v;
+                        el.style.color = '#000';
+                        for (const t of ['input', 'change', 'blur']) {{
+                            el.dispatchEvent(new Event(t, {{ bubbles: true }}));
+                        }}
+                    }};
+                    // 当前值空着补0
+                    const cur1 = find('trainTimesWeek'), cur2 = find('trainMinute');
+                    if (cur1 && !cur1.value.trim()) setVal(cur1, '0');
+                    if (cur2 && !cur2.value.trim()) setVal(cur2, '0');
+                    setVal(find('targetTrainTimesWeek'), '{new_t}');
+                    setVal(find('targetTrainMinute'), '{new_m}');
+                }}
+            """)
+            print(f"  [补填] 运动目标：当前{cur_t}次/{cur_m}分钟 → 目标{new_t}次/{new_m}分钟")
+        else:
+            print("  [警告] 运动字段未找到")
 
         # ========== 10. 随访分类：按血糖值判定 ==========
         # ID后缀同样随表单实例变化（如 visitType_1_GFAI4），用前缀 + 可见性过滤
@@ -931,6 +1082,33 @@ def fill_diabetes():
             }
         """, "用药情况-保存", timeout=15)
 
+        # ========== 15.2 处理"服药数据删除"确认弹窗（如有） ==========
+        # 保存用药情况时系统可能弹"当前操作会引起服药数据删除,是否继续?"，
+        # 这是模态框，不处理会挡住后面所有点击（唐伟全首次随访时就卡在这里，
+        # 导致后面的健康教育步骤全部超时）。出现就点"确定/是"继续
+        print("15.2 检查服药数据删除确认弹窗...")
+        for _ in range(6):  # 可能有多层确认，每点一次重新检查；没有就直接过
+            handled = page.evaluate("""
+                () => {
+                    for (const w of document.querySelectorAll('.x-window, .x-window-dlg')) {
+                        const r = w.getBoundingClientRect();
+                        if (r.width === 0 || r.x < -100) continue;
+                        if (!(w.textContent || '').includes('服药数据删除')) continue;
+                        for (const b of w.querySelectorAll('button')) {
+                            const t = (b.textContent || '').trim();
+                            if (t === '确定' || t === '是') { b.click(); return true; }
+                        }
+                        return false;
+                    }
+                    return false;
+                }
+            """)
+            if handled:
+                print("  已确认'服药数据删除'弹窗")
+                time.sleep(0.5)
+            else:
+                break
+
         # ========== 12. 点击确定（保存问卷） ==========
         print("16. 点击确定，保存问卷...")
         run_click(page, r"""
@@ -990,27 +1168,42 @@ def fill_diabetes():
 
         # ========== 13. 健康教育弹窗 ==========
         print("17. 处理健康教育...")
-        run_click(page, """
+        # 保存问卷后"引入健康处方"弹窗可能已被系统自动打开；已开就跳过点图标
+        edu_dialog_open = page.evaluate("""
             () => {
-                const onScreen = el => {
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) return false;
-                    if (r.x < -100 || r.y < -100) return false;
-                    let a = el;
-                    while (a && a !== document.body) {
-                        if (window.getComputedStyle(a).display === 'none') return false;
-                        a = a.parentElement;
-                    }
-                    return true;
-                };
-                const img = document.getElementById("importDiaHER");
-                if (img && onScreen(img)) {
-                    img.setAttribute('data-kimi-click', '1');
-                    return true;
+                for (const w of document.querySelectorAll('.x-window')) {
+                    const r = w.getBoundingClientRect();
+                    if (r.width === 0 || r.x < -100) continue;
+                    if ((w.textContent || '').includes('引入健康处方')) return true;
                 }
                 return false;
             }
-        """, "打开健康教育")
+        """)
+        if edu_dialog_open:
+            print("  引入健康处方弹窗已打开，跳过点击图标")
+        else:
+            run_click(page, """
+                () => {
+                    const onScreen = el => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) return false;
+                        if (r.x < -100 || r.y < -100) return false;
+                        let a = el;
+                        while (a && a !== document.body) {
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }
+                        return true;
+                    };
+                    // 图标id固定为importDiaHER（无随机后缀），前缀匹配以防万一
+                    const img = document.querySelector('img[id^="importDiaHER"]');
+                    if (img && onScreen(img)) {
+                        img.setAttribute('data-kimi-click', '1');
+                        return true;
+                    }
+                    return false;
+                }
+            """, "打开健康教育")
 
         # 列表中E11.900有多条（如“糖尿病（视网膜病变）”），
         # 必须匹配：健康处方名称=糖尿病、疾病名称=2型糖尿病、疾病编码=E11.900 的那一条

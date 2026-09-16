@@ -11,6 +11,7 @@
 
 from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta
+import json
 import time
 
 def fill_yyjh():
@@ -121,11 +122,13 @@ def fill_yyjh():
 
         for code, disease_name in DISEASE_CHECKBOXES.items():
             # 检查两处复选框：healthMark_check 和 diseasetext_check_jb
+            # 注意：ID后缀（如 _GNUIB）每份档案都不同，且同前缀下还有 _Control_1（稳定/不稳定单选）
+            # 和 _qx（取消）等干扰控件，必须用"精确代码+后缀"的正则匹配，只看checkbox
             is_checked = page.evaluate(f"""
                 () => {{
-                    const cb1 = document.getElementById('healthMark_check_{code}_38A6N');
-                    const cb2 = document.getElementById('diseasetext_check_jb_{code}_38A6N');
-                    return (cb1 && cb1.checked) || (cb2 && cb2.checked);
+                    const re = /^(healthMark_check_|diseasetext_check_jb_){code}_[A-Za-z0-9]+$/;
+                    return Array.from(document.querySelectorAll('input[type="checkbox"]'))
+                        .some(cb => re.test(cb.id) && cb.checked);
                 }}
             """)
             if is_checked:
@@ -456,64 +459,151 @@ def fill_yyjh():
         time.sleep(1)
 
         # ========== 11.2 康复指导（针对特定疾病患者） ==========
-        # 需要康复指导的疾病（根据用户提供的 HTML，骨质疏松和骨性关节痛可能不在疾病列表中）
-        REHAB_DISEASES = {
-            "0207": "脑卒中",
-            "0204": "冠心病",
-            "0221": "脑血管病后遗症",
-            "0205": "慢性阻塞性肺疾病"
-            # 注：骨质疏松、骨性关节痛在 diseasetext_check_jb 中可能是 0219/0220，但根据 HTML 实际是"失能/失智"
-            # 如需添加，请确认实际疾病代码
+        # 疾病代码 -> (疾病名, "引入健康处方"弹窗里的条目名)
+        # 条目名必须精确匹配（弹窗里还有"康复指导--冠心病的II期/III期"等相近条目）；
+        # 脑卒中有3个分期条目，社康随访患者默认选"恢复中、后期（相对恢复期）"；
+        # 骨质疏松/骨性关节病在弹窗里有条目，但健康标志里没有对应复选框，无法自动识别
+        REHAB_PRESCRIPTIONS = {
+            "0204": ("冠心病", "康复指导--冠心病"),
+            "0207": ("脑卒中", "康复指导--脑卒中恢复中、后期（相对恢复期）"),
+            "0221": ("脑血管病后遗症", "康复指导--脑血管病"),
+            "0205": ("慢性阻塞性肺疾病", "康复指导--慢性阻塞性肺部疾病"),
         }
 
-        need_rehab = False
-        rehab_diseases_found = []
-
         print("\n=== 11.2 康复指导判断 ===")
-        for code, disease_name in REHAB_DISEASES.items():
-            # 检查两处复选框：healthMark_check 和 diseasetext_check_jb
+        rehab_found = []  # [(疾病名, 处方条目名)]
+        for code, (disease_name, presc_name) in REHAB_PRESCRIPTIONS.items():
+            # 与4.1相同的前缀正则匹配：ID后缀每份档案不同，且要避开 _Control_/_qx 干扰控件
             is_checked = page.evaluate(f"""
                 () => {{
-                    const cb1 = document.getElementById('healthMark_check_{code}_38A6N');
-                    const cb2 = document.getElementById('diseasetext_check_jb_{code}_38A6N');
-                    return (cb1 && cb1.checked) || (cb2 && cb2.checked);
+                    const re = /^(healthMark_check_|diseasetext_check_jb_){code}_[A-Za-z0-9]+$/;
+                    return Array.from(document.querySelectorAll('input[type="checkbox"]'))
+                        .some(cb => re.test(cb.id) && cb.checked);
                 }}
             """)
             if is_checked:
-                need_rehab = True
-                rehab_diseases_found.append(disease_name)
-                print(f"  [选中] {disease_name} - 需要康复指导")
+                rehab_found.append((disease_name, presc_name))
+                print(f"  [选中] {disease_name} - 需要康复指导（{presc_name}）")
 
-        # 额外检查骨质疏松和骨性关节痛（需要确认实际代码）
-        # 根据 HTML，0219=失能，0220=失智，不是骨质疏松/骨性关节痛
-        # 如果页面有其他标识骨质疏松/骨性关节痛的字段，需要另外添加检查逻辑
+        if rehab_found:
+            print(f"康复指导疾病：{'、'.join(d for d, _ in rehab_found)}")
+            print("11.2 康复指导选择是，并调入对应健康处方...")
 
-        if need_rehab:
-            print(f"康复指导疾病：{', '.join(rehab_diseases_found)}")
-            print("11.2 填写康复指导...")
-            page.evaluate(f"""
-                () => {{
-                    // 康复指导选择"是"
-                    const select = document.getElementById('yyjh-kfzd_' + '{suffix_id}');
-                    if (select) {{
-                        for (let opt of select.options) {{
-                            if (opt.value === 'y') {{
-                                opt.selected = true;
-                                break;
-                            }}
-                        }}
-                    }}
-                    // 填写康复指导意见（正确 ID: txt_KFYJ_）
-                    const textarea = document.getElementById('txt_KFYJ_' + '{suffix_id}');
-                    if (textarea) {{
-                        textarea.value = '1.遵医嘱服药，不要随意自行停药，如需调整药物，应先咨询医生。\\n2.定期复查。\\n3.控制血脂、血压及血糖。\\n4.存在后遗症的患者，应在医生的指导下进行适当康复训练。\\n5.防止饮水呛咳导致肺炎。';
-                        textarea.style.color = '#000';
-                    }}
-                }}
+            # 康复指导选择"是"
+            page.evaluate("""
+                () => {
+                    const sel = document.querySelector('select[id^="yyjh-kfzd_"]');
+                    if (sel) {
+                        sel.value = 'y';
+                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
             """)
             time.sleep(1)
+
+            # 点康复指导旁边的"健康处方"图标（jkchufang图标），打开"引入健康处方"弹窗
+            page.evaluate("""
+                () => {
+                    const img = document.querySelector('img[id^="kf_importHER_"]');
+                    if (img) img.click();
+                }
+            """)
+            # 等弹窗出来并拿到窗口id（后面关窗要用）
+            win_id = ''
+            for _ in range(10):
+                win_id = page.evaluate("""
+                    () => {
+                        for (const w of document.querySelectorAll('.x-window')) {
+                            if (w.getBoundingClientRect().width === 0) continue;
+                            if ((w.textContent || '').includes('引入健康处方')) return w.id;
+                        }
+                        return '';
+                    }
+                """)
+                if win_id:
+                    break
+                time.sleep(0.5)
+
+            if win_id:
+                for disease_name, presc_name in rehab_found:
+                    presc_js = json.dumps(presc_name, ensure_ascii=False)
+                    # 选中条目行：ExtJS grid要发完整鼠标事件序列才选中（单独click无效）
+                    clicked = page.evaluate(f"""
+                        () => {{
+                            for (const cell of document.querySelectorAll('.x-grid3-cell-inner')) {{
+                                if ((cell.textContent || '').trim() !== {presc_js}) continue;
+                                if (cell.getBoundingClientRect().width === 0) continue;
+                                const row = cell.closest('.x-grid3-row') || cell;
+                                for (const type of ['mousedown', 'mouseup', 'click']) {{
+                                    for (const target of [cell, row]) {{
+                                        target.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+                                    }}
+                                }}
+                                return 'CLICKED';
+                            }}
+                            return 'NOT_FOUND';
+                        }}
+                    """)
+                    if clicked != 'CLICKED':
+                        print(f"  警告：弹窗里没找到'{presc_name}'条目，跳过")
+                        continue
+                    time.sleep(0.5)
+                    # 点调入（弹窗调入后不自动关，可连续调入多个）
+                    page.evaluate("""
+                        () => {
+                            for (const w of document.querySelectorAll('.x-window')) {
+                                if (w.getBoundingClientRect().width === 0) continue;
+                                if (!(w.textContent || '').includes('引入健康处方')) continue;
+                                for (const b of w.querySelectorAll('button')) {
+                                    if ((b.textContent || '').trim() === '调入') { b.click(); return; }
+                                }
+                            }
+                        }
+                    """)
+                    time.sleep(1)
+                    print(f"  已调入：{presc_name}")
+                # 关闭弹窗（点右上角X无效，要走ExtJS API）
+                page.evaluate(f"""
+                    () => {{
+                        try {{ Ext.getCmp('{win_id}').close(); }} catch (e) {{}}
+                    }}
+                """)
+                time.sleep(0.5)
+            else:
+                print("  警告：'引入健康处方'弹窗未打开")
+
+            # 兜底：调入失败导致意见为空时，填固定文本
+            has_text = page.evaluate("""
+                () => {
+                    const ta = document.querySelector('textarea[id^="txt_KFYJ_"]');
+                    return !!(ta && ta.value.trim());
+                }
+            """)
+            if not has_text:
+                print("  调入健康处方失败，改填固定康复指导意见")
+                page.evaluate("""
+                    () => {
+                        const ta = document.querySelector('textarea[id^="txt_KFYJ_"]');
+                        if (ta) {
+                            ta.value = '1.遵医嘱服药，不要随意自行停药，如需调整药物，应先咨询医生。\\n2.定期复查。\\n3.控制血脂、血压及血糖。\\n4.存在后遗症的患者，应在医生的指导下进行适当康复训练。\\n5.防止饮水呛咳导致肺炎。';
+                            ta.style.color = '#000';
+                        }
+                    }
+                """)
+                time.sleep(1)
         else:
-            print("无需康复指导（未选中相关疾病）")
+            # 没有需要康复指导的疾病，默认"否"
+            print("无需康复指导（未选中相关疾病），默认否")
+            page.evaluate("""
+                () => {
+                    const sel = document.querySelector('select[id^="yyjh-kfzd_"]');
+                    if (sel) {
+                        sel.value = 'n';
+                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+            """)
+            time.sleep(0.5)
         print("=" * 40)
 
         # ========== 13. 设置下次服务日期 ==========

@@ -131,22 +131,50 @@ SCAN_JS = r"""
     const heads = Array.from(headerTable.querySelectorAll('th')).map(th => th.textContent.trim());
     const colIdx = colNames.map(n => heads.indexOf(n));
     const nameIdx = heads.indexOf('姓名');
+    const foundIdx = heads.indexOf('发现日期');
     const out = [];
-    for (const tr of table.querySelectorAll('tr')) {
-        const tds = tr.querySelectorAll('td');
-        if (tds.length < 25) continue;   // 表头 28 列含滚动条占位列，行只有 27 列
-        const name = (tds[nameIdx] || {}).textContent?.trim();
-        colNames.forEach((cn, k) => {
-            const td = tds[colIdx[k]];
-            if (!td) return;
-            const delta = td.querySelector('.delta');
-            if (!delta) return;   // 无角标=无需随访
-            const color = delta.style.borderColor || '';
-            if (!(color.includes('255, 0, 0') || color === 'red')) return;   // 只处理红=待跟踪
-            const m = td.textContent.match(/\d{4}-\d{2}-\d{2}/);
-            if (!m) return;
-            out.push({name, col: cn, date: m[0]});
-        });
+    // 已随访过的单元格里嵌套了随访记录子表格，必须用 :scope > td 取直接子单元格，
+    // 否则子表格的 td 混进来把列序号顶歪（沈文哲的行就因此被漏掉）
+    for (const tbody of table.querySelectorAll(':scope > table > tbody, :scope > tbody')) {
+        for (const tr of tbody.querySelectorAll(':scope > tr')) {
+            const tds = tr.querySelectorAll(':scope > tr > td, :scope > td');
+            if (tds.length < 25) continue;   // 表头 28 列含滚动条占位列，行只有 27 列
+            const name = (tds[nameIdx] || {}).textContent?.trim();
+            // 发现日期（录入系统日期）：新录入孕妇第1次随访时效判断要用
+            let foundDate = null;
+            if (foundIdx >= 0 && tds[foundIdx]) {
+                const fm = tds[foundIdx].textContent.match(/\d{4}-\d{2}-\d{2}/);
+                if (fm) foundDate = fm[0];
+            }
+            colNames.forEach((cn, k) => {
+                const td = tds[colIdx[k]];
+                if (!td) return;
+                // 单元格里是否已有随访记录（嵌套子表格/含"随访人"字样）
+                const hasRecord = !!td.querySelector('.childTable')
+                    || (td.textContent || '').includes('随访人');
+                // 子表格里的随访记录日期，取最大者=上次随访日期
+                // （规则：距上次随访没超过7天不做二次随访——方洵晴 9-13 随访过，9-16 不该再做）
+                const recDates = Array.from(td.querySelectorAll('.childTable tr'))
+                    .map(tr2 => { const m2 = (tr2.textContent || '').match(/\d{4}-\d{2}-\d{2}/); return m2 ? m2[0] : null; })
+                    .filter(Boolean).sort();
+                const lastRec = recDates.length ? recDates[recDates.length - 1] : null;
+                // 一个单元格可能有多个角标（历史随访记录 + 新跟踪日期），逐个检查
+                td.querySelectorAll('.delta').forEach(delta => {
+                    const color = delta.style.borderColor || '';
+                    const isRed = color.includes('255, 0, 0') || color === 'red';
+                    const isBlue = color.includes('0, 96, 255');
+                    if (!isRed && !isBlue) return;
+                    // 日期取角标所在小容器的——有历史记录时，单元格第一个日期是
+                    // 上次随访时间，直接取 td 全文会取错（沈文哲：09-02 vs 09-22）
+                    const scopeEl = delta.parentElement || td;
+                    const m = (scopeEl.textContent || '').match(/\d{4}-\d{2}-\d{2}/)
+                           || (td.textContent || '').match(/\d{4}-\d{2}-\d{2}/);
+                    if (!m) return;
+                    out.push({name, col: cn, date: m[0],
+                              color: isRed ? 'red' : 'blue', foundDate, hasRecord, lastRec});
+                });
+            });
+        }
     }
     return {rows: out};
 }
@@ -447,7 +475,15 @@ def clear_other_filters(page):
 
 
 def scan_due(page):
-    """当前页符合条件的单元格：红角标 且 截止距今<=DUE_DAYS。"""
+    """当前页符合条件的单元格：
+    1. 红角标=待跟踪，截止距今<=DUE_DAYS（含已过期）；
+    2. 红角标在「第1次13周前」列且尚无随访记录：新录入孕妇发现满7天即处理
+       （录入后7-14天应完成第一次电话随访），即使计划日期还远
+       （王乐：09-06发现，计划10-12）。hasRecord 防止提前随访后红角标仍在
+       导致每次运行重复随访；
+    3. 蓝角标=继续跟踪（上次随访后系统排的新日期），只处理第1次列
+       （只有第1次需要两次随访），距今<=DUE_DAYS，方式用短信
+       （沈文哲：09-02电话随访后排的09-22）。"""
     today = date.today()
     data = page.evaluate(SCAN_JS, list(CONFIG))
     hits = []
@@ -456,15 +492,103 @@ def scan_due(page):
             gap = (datetime.strptime(r["date"], "%Y-%m-%d").date() - today).days
         except ValueError:
             continue
-        if gap <= DUE_DAYS:
-            hits.append({"name": r["name"], "col": r["col"], "date": r["date"], "gap": gap})
+        # 非第1次列的蓝角标不处理（blue在无记录时是系统标记的暂不随访状态，
+        # 如温有琴等过期数月的条目；第2~7次也只需一次随访）
+        if r.get("color") == "blue" and r["col"] != "第1次13周前":
+            continue
+        has_rec = bool(r.get("hasRecord"))
+        if has_rec:
+            # 已有随访记录：第2~7次只需一次随访，直接跳过；
+            # 第1次列允许二次随访（继续跟踪），但距上次必须超过7天
+            # （沈文哲 09-02→09-16 符合；方洵晴 09-13→09-16 只有3天，不该做）
+            if r["col"] != "第1次13周前":
+                continue
+            if not r.get("lastRec"):
+                continue  # 上次日期读不到就跳过，宁缺毋滥
+            try:
+                since_last = (today - datetime.strptime(r["lastRec"], "%Y-%m-%d").date()).days
+            except ValueError:
+                continue
+            if since_last <= 7:
+                continue
+        due = gap <= DUE_DAYS
+        if (not due and r["col"] == "第1次13周前"
+                and not r.get("hasRecord") and r.get("foundDate")):
+            # 新录入孕妇：发现满7天即做第一次电话随访（录入后7-14天应完成），
+            # 不论角标红蓝、计划日期远近（王乐：09-06发现，计划10-12，蓝角标无记录）
+            try:
+                found_gap = (today - datetime.strptime(r["foundDate"], "%Y-%m-%d").date()).days
+                if found_gap >= 7:
+                    due = True
+            except ValueError:
+                pass
+        if not due:
+            continue
+        hits.append({"name": r["name"], "col": r["col"], "date": r["date"], "gap": gap,
+                     "blue": r.get("color") == "blue",
+                     "hasRecord": bool(r.get("hasRecord"))})
     return hits
+
+
+def close_dialog(page):
+    """关闭登记弹窗：ESC 对 el-dialog 不一定有效，补点右上角X"""
+    page.keyboard.press("Escape")
+    time.sleep(0.3)
+    page.evaluate("() => {" + DLG_JS + """
+        const d = dlg();
+        if (d) { const x = d.querySelector('.el-dialog__headerbtn'); if (x) x.click(); }
+    }""")
+    time.sleep(0.5)
+
+
+def first_col_records(page, name, d):
+    """真实hover第1次单元格，强制渲染懒加载的记录表，返回随访记录日期列表。
+    返回 None=读取失败（宁缺毋滥，调用方跳过）；[]=确认无记录；[dates]=有记录。
+    注意必须用 Playwright 真实 hover，合成 JS 事件不触发渲染（方洵晴因
+    DOM 里读不到已有记录而被误判，遭重复登记）。"""
+    try:
+        ref = page.locator(
+            f'tr:has-text("{name}") .el-popover__reference:has-text("{d}"):visible').first
+        ref.hover(timeout=5000)
+        time.sleep(1.5)
+        page.mouse.move(10, 10)
+        time.sleep(0.5)
+    except Exception:
+        return None
+    return page.evaluate(r"""
+        (target) => {
+            const heads = Array.from(document.querySelectorAll('.el-table__header-wrapper th'))
+                .map(th => th.textContent.trim());
+            const idx = heads.indexOf('第1次13周前');
+            const table = Array.from(document.querySelectorAll('.el-table__body-wrapper'))
+                .find(w => !w.closest('.el-table__fixed, .el-table__fixed-right'));
+            if (!table || idx < 0) return null;
+            for (const tbody of table.querySelectorAll(':scope > table > tbody, :scope > tbody')) {
+                for (const tr of tbody.querySelectorAll(':scope > tr')) {
+                    if (!(tr.textContent || '').includes(target)) continue;
+                    const td = tr.querySelectorAll(':scope > td')[idx];
+                    if (!td) return null;
+                    return Array.from(td.querySelectorAll('.childTable .el-table__body tr'))
+                        .map(r => { const m = (r.textContent || '').match(/\d{4}-\d{2}-\d{2}/); return m ? m[0] : null; })
+                        .filter(Boolean);
+                }
+            }
+            return null;
+        }
+    """, name)
 
 
 def fill_and_save(page, hit):
     """点单元格 → 填弹窗 → 保存。返回 True/False。"""
     name, col, d = hit["name"], hit["col"], hit["date"]
-    cfg = CONFIG[col]
+    cfg = dict(CONFIG[col])
+    if hit.get("hasRecord"):
+        # 有记录=第1次列的第二次随访（继续跟踪），用短信；无记录才是第一次电话
+        cfg["method"] = "短信"
+    if col == "第1次13周前":
+        # 第1次要随访两次：距截止日>7天就做=提前随访，还需继续跟踪（王乐）；
+        # 距截止日7天内或已过截止日才算完成（贺小丽：07-15随访，截止07-14）
+        cfg["choice"] = "是" if hit["gap"] <= DUE_DAYS else "否，需要继续跟踪"
     desc = f"{name} {col}({d})"
 
     # 收掉残留的 sfPop 气泡（会拦截点击），再点日期单元格
@@ -490,33 +614,42 @@ def fill_and_save(page, hit):
     title = page.evaluate("() => {" + DLG_JS + "return dlg().textContent.slice(0, 80);}")
     if name not in title:
         print(f"  [失败] {desc} 弹窗姓名不符: {title!r}")
-        page.keyboard.press("Escape")
+        close_dialog(page)
         return False
 
-    # 随访方式（真实点击开下拉，JS 点选项）
-    page.evaluate("() => {" + DLG_JS + """
-        dlgFormItem('随访方式：').querySelector('.el-select').setAttribute('data-kimi-click', '1');
-    }""")
-    page.locator('[data-kimi-click="1"]').first.click()
-    page.evaluate("() => document.querySelectorAll('[data-kimi-click]')"
-                  ".forEach(e => e.removeAttribute('data-kimi-click'))")
-    time.sleep(1)
-    picked = page.evaluate("(m) => {" + BASE_JS + """
-        const dd = Array.from(document.querySelectorAll('.el-select-dropdown')).find(onScreen);
-        if (!dd) return 'no-dropdown';
-        const item = Array.from(dd.querySelectorAll('.el-select-dropdown__item'))
-            .find(i => i.textContent.trim() === m);
-        if (!item) return 'no-option';
-        item.click();
-        return 'ok';
-    }""", cfg["method"])
-    time.sleep(0.5)
-    val = page.evaluate("() => {" + DLG_JS + """
-        return dlgFormItem('随访方式：').querySelector('input').value;
-    }""")
+    # 随访方式（真实点击开下拉，JS 点选项；下拉打不开最多重试3次）
+    picked = ''
+    val = ''
+    for _attempt in range(3):
+        page.evaluate("() => {" + DLG_JS + """
+            dlgFormItem('随访方式：').querySelector('.el-select').setAttribute('data-kimi-click', '1');
+        }""")
+        try:
+            page.locator('[data-kimi-click="1"]').first.click(timeout=5000)
+        except Exception:
+            pass
+        page.evaluate("() => document.querySelectorAll('[data-kimi-click]')"
+                      ".forEach(e => e.removeAttribute('data-kimi-click'))")
+        time.sleep(1)
+        picked = page.evaluate("(m) => {" + BASE_JS + """
+            const dd = Array.from(document.querySelectorAll('.el-select-dropdown')).find(onScreen);
+            if (!dd) return 'no-dropdown';
+            const item = Array.from(dd.querySelectorAll('.el-select-dropdown__item'))
+                .find(i => i.textContent.trim() === m);
+            if (!item) return 'no-option';
+            item.click();
+            return 'ok';
+        }""", cfg["method"])
+        time.sleep(0.5)
+        val = page.evaluate("() => {" + DLG_JS + """
+            return dlgFormItem('随访方式：').querySelector('input').value;
+        }""")
+        if val == cfg["method"]:
+            break
+        time.sleep(1)
     if val != cfg["method"]:
         print(f"  [失败] {desc} 随访方式选不上({picked})，当前值 {val!r}，不保存")
-        page.keyboard.press("Escape")
+        close_dialog(page)
         return False
 
     # 随访结果（原生 setter + input 事件）
@@ -530,7 +663,7 @@ def fill_and_save(page, hit):
     }""", cfg["text"])
     if not ok:
         print(f"  [失败] {desc} 随访结果写入失败，不保存")
-        page.keyboard.press("Escape")
+        close_dialog(page)
         return False
 
     # 本次随访完成
@@ -548,7 +681,7 @@ def fill_and_save(page, hit):
     }""")
     if checked != cfg["choice"]:
         print(f"  [失败] {desc} 完成状态选不上(当前 {checked!r})，不保存")
-        page.keyboard.press("Escape")
+        close_dialog(page)
         return False
 
     # 保存，等弹窗关闭
@@ -671,14 +804,42 @@ def main():
 
         print("6. 扫描全部页，登记到期随访...")
         done, failed = [], []
+        skipped = set()
         for page_no in range(1, 40):
             while True:
                 hits = scan_due(udrhip)
+                # 已成功、已失败、已跳过的都要排除——"继续跟踪"的日期保存后角标不会消失，
+                # 不排除已成功的会无限重复登记（王乐/方洵晴重复事故的原因）
+                skip = ({(h["name"], h["col"], h["date"]) for h in done}
+                        | set(failed) | skipped)
                 hits = [h for h in hits
-                        if (h["name"], h["col"], h["date"]) not in failed]
+                        if (h["name"], h["col"], h["date"]) not in skip]
                 if not hits:
                     break
                 h = hits[0]  # 一次处理一个，保存后重扫（DOM 会刷新）
+                key = (h["name"], h["col"], h["date"])
+                if h["col"] == "第1次13周前":
+                    # 记录表懒加载，扫描时的 hasRecord 不可靠；hover 强制渲染后核实
+                    recs = first_col_records(udrhip, h["name"], h["date"])
+                    if recs is None:
+                        print(f"  [跳过] {h['name']} 第1次记录读取失败，宁缺毋滥")
+                        skipped.add(key)
+                        continue
+                    if recs:
+                        last = max(recs)
+                        since = (date.today() - datetime.strptime(last, "%Y-%m-%d").date()).days
+                        if since <= 7:
+                            print(f"  [跳过] {h['name']} 第1次已有{last}随访，距今{since}天（<=7天不做二次随访）")
+                            skipped.add(key)
+                            continue
+                        if h["gap"] > DUE_DAYS:
+                            print(f"  [跳过] {h['name']} 第1次已有{last}随访，截止日还有{h['gap']}天")
+                            skipped.add(key)
+                            continue
+                        # 距上次>7天且临近截止日：做第二次随访（短信）
+                        h["hasRecord"] = True
+                    else:
+                        h["hasRecord"] = False  # 确认无记录：第一次电话随访
                 print(f"  第{page_no}页 待登记: {h['name']} {h['col']} 截止{h['date']}"
                       f"（{'已过期' if h['gap'] < 0 else str(h['gap']) + '天后'}）")
                 if fill_and_save(udrhip, h):
