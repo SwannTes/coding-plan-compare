@@ -21,6 +21,12 @@
            有说明指标如 血HCG<5阴性/否认怀孕/拒查HCG/已绝经/哺乳期/尿HCG阴性
            → 妇保-月经延迟_YYYY-MM.xlsx
        （分类规则用 2026-07 全院 20 条真实延迟病历逐一验证过）
+5. 诊断查询=孕：清空年龄/末次月经/就诊类型筛选，选"诊断查询"，12 个诊断关键词
+   （月经延长/停经/孕/妊娠/胚胎/试管/黄体/流产/先兆/人流/药流/辅助）逐个查询，
+   结果按 GHXH 合并去重 → 妇保-诊断含孕_YYYY-MM.xlsx
+6. 病历书写质控：对诊断含孕名单逐条读病历正文，核对孕周一致性（末次月经计算 vs
+   主诉 vs 初步诊断）、转诊记录、≥16周的胎心音和宫底描述，逐项给合格/需复核/不合格
+   → 妇保-诊断含孕-病历质控_YYYY-MM.xlsx
 
 关键机制（继承自 monthly 脚本，都是实测趟出来的）：
 - 系统的"导出"按钮不可用，改为直接读结果表格的 Ext store 数据（含全部字段）。
@@ -45,7 +51,7 @@
 """
 
 from playwright.sync_api import sync_playwright
-from datetime import datetime
+from datetime import datetime, date
 import calendar
 import json
 import os
@@ -581,6 +587,29 @@ def pick_combo(page, combo_name, item_text, desc):
     return False
 
 
+def clear_field(page, field_name, desc):
+    """清空文本输入框：Ext setValue('')，组件级操作，不要求元素可见
+    （搜索/读完病历后表单行可能被收起，真实键盘定位会找不到）。"""
+    ok = run_step(page, "() => {" + PANEL_JS + f"""
+        let found = false;
+        Ext.ComponentMgr.all.each(c => {{
+            if (found) return;
+            if (c && c.el && c.el.dom && (c.name === {json.dumps(field_name)} || c.el.dom.name === {json.dumps(field_name)})
+                && c.setValue) {{
+                c.setValue('');
+                found = String(c.getValue ? c.getValue() : '') === '';
+            }}
+        }});
+        return found;
+    }}""", desc, timeout=5, quiet=True)
+    if ok:
+        print(f"  [成功] {desc}")
+    else:
+        print(f"  [失败] {desc}")
+        FAILED_STEPS.append(desc)
+    return ok
+
+
 def type_field(page, field_name, text, desc):
     """真实键盘输入到面板内的输入框：点击 → 全选 → 输入 → Tab 提交。"""
     if not run_click(page, "() => {" + PANEL_JS + f"""
@@ -647,6 +676,177 @@ def save_excel(rows, filename, desc, fields=None):
     except Exception as e:
         print(f"  [失败] {desc}：写 Excel 出错 {e}")
         FAILED_STEPS.append(desc + "(写Excel)")
+
+
+# ========== 诊断含孕病历书写质控规则 ==========
+def parse_lmp(text):
+    """从末次月经字段/文本里解析日期，支持 2026-02-19、2026/02/19、2026年2月19日。"""
+    m = re.search(r"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})", text or "")
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def extract_weeks(text):
+    """提取孕周：孕28周 / 孕28+3周 / 停经28周 都算。"""
+    m = re.search(r"(?:孕|停经)\s*(\d{1,2})\s*(?:\+\s*\d+)?\s*周", text or "")
+    return int(m.group(1)) if m else None
+
+
+# 宫底位置大致刻度（用户给的孕月对照表换算）：1盆腔/耻骨上 2脐耻之间 3脐下
+# 4平脐 5脐上 6脐剑之间 7剑突下。长词先匹配（"脐剑之间"先于"脐上"）
+FUNDUS_PATTERNS = [
+    (r"脐.{0,2}剑突之间|脐剑之间", 6, "脐与剑突之间"),
+    (r"剑突下", 7, "剑突下"),
+    (r"脐上", 5, "脐上"),
+    (r"平脐|脐平", 4, "平脐"),
+    (r"脐下", 3, "脐下"),
+    (r"脐.{0,2}耻.{0,3}之间", 2, "脐耻之间"),
+    (r"耻骨联合上|盆腔", 1, "耻骨联合上/盆腔"),
+]
+
+
+def fundus_expected(wk):
+    """该孕周宫底位置的合理刻度集合（按用户给的孕月对照表）。"""
+    if wk is None or wk < 16:
+        return None
+    if wk <= 19:
+        return {1, 2, 3}
+    if wk <= 23:
+        return {3}
+    if wk <= 27:
+        return {4, 5}
+    if wk <= 31:
+        return {5, 6}
+    if wk <= 35:
+        return {6}
+    if wk <= 39:
+        return {7}
+    return {6}
+
+
+def qc_pregnancy_record(row, rec):
+    """一份怀孕病历的书写质控，返回 dict（各检查项结果+结论）。
+    检查项：1.孕周一致性（末次月经计算 vs 主诉 vs 初步诊断）
+            2.转诊记录（超范围产检/诊疗必须体现转诊上级医院）
+            3.孕周≥16周：胎心音记录；宫底/腹部描述符合孕周"""
+    sec = rec.get("sec") or {}
+    zsxx, tgjc = sec.get("ZSXX", ""), sec.get("TGJC", "")
+    text = rec.get("text", "")
+    out = {}
+    # ---- 1. 孕周一致性 ----
+    lmp = parse_lmp(rec.get("mcyj")) or parse_lmp(sec.get("MCYJDESC")) or parse_lmp(text)
+    out["末次月经"] = lmp.strftime("%Y-%m-%d") if lmp else ""
+    visit = parse_lmp(str(row.get("GHSJ") or ""))
+    calc_wk = ((visit - lmp).days // 7) if (lmp and visit) else None
+    zs_wk = extract_weeks(zsxx)
+    zd_wk = extract_weeks(str(row.get("ZYZD") or ""))
+    out["计算孕周"] = f"{calc_wk}周" if calc_wk is not None else ""
+    out["主诉孕周"] = f"{zs_wk}周" if zs_wk is not None else ""
+    out["诊断孕周"] = f"{zd_wk}周" if zd_wk is not None else ""
+    wks = [w for w in (calc_wk, zs_wk, zd_wk) if w is not None]
+    if len(wks) < 2:
+        out["孕周核对"] = "需复核(信息不全)"
+    elif max(wks) - min(wks) == 0:
+        out["孕周核对"] = "一致"
+    elif max(wks) - min(wks) == 1:
+        out["孕周核对"] = "需复核(相差1周)"
+    else:
+        out["孕周核对"] = "不合格(孕周不一致)"
+    # ---- 2. 转诊记录（管理计划在接口的 gljh 字段，不在病历正文里） ----
+    m = re.search(r"转诊|转上级|上级医院|转院", text + "\n" + (rec.get("plan") or ""))
+    out["转诊记录"] = f"有({m.group(0)})" if m else "不合格(无转诊记录)"
+    # ---- 3. 孕周≥16周：胎心音 + 宫底/腹部描述 ----
+    wk = calc_wk or zd_wk or zs_wk
+    if wk is None or wk < 16:
+        out["胎心音"] = "孕周<16，不要求"
+        out["宫底描述"] = "孕周<16，不要求"
+    else:
+        exam = tgjc or text
+        m = re.search(r"胎心[音率]?\s*\d+|胎心[音率]?[:：]?\s*\d+|胎心[音率]", exam)
+        if m:
+            out["胎心音"] = f"已记录({m.group(0).strip()})"
+        else:
+            m2 = re.search(r"未听清|未闻及|听不到|拒绝|拒听", exam)
+            if m2 and re.search(r"建议|监测|上级", exam):
+                out["胎心音"] = f"有说明({m2.group(0)})"
+            elif m2:
+                out["胎心音"] = f"需复核({m2.group(0)}但无建议)"
+            else:
+                out["胎心音"] = "不合格(≥16周无胎心音记录)"
+        pos = None
+        for pat, lv, label in FUNDUS_PATTERNS:
+            if re.search(pat, exam):
+                pos = (lv, label)
+                break
+        if not pos:
+            if re.search(r"腹膨隆|宫高|宫底", exam):
+                # "腹膨隆如孕月"这类定性描述也算有腹部描述（用户确认过这种写法可以）
+                out["宫底描述"] = "有描述(腹膨隆/宫高，未量化位置)"
+            else:
+                out["宫底描述"] = "不合格(≥16周无宫底/腹部描述)"
+        else:
+            exp = fundus_expected(wk)
+            if exp and pos[0] in exp:
+                out["宫底描述"] = f"符合孕周({pos[1]})"
+            elif exp:
+                out["宫底描述"] = f"需复核(宫底{pos[1]}与孕{wk}周不符)"
+            else:
+                out["宫底描述"] = f"有描述({pos[1]})"
+    # ---- 结论 ----
+    vals = [out["孕周核对"], out["转诊记录"], out["胎心音"], out["宫底描述"]]
+    if any(v.startswith("不合格") for v in vals):
+        out["结论"] = "不合格"
+    elif any(v.startswith("需复核") for v in vals):
+        out["结论"] = "需复核"
+    else:
+        out["结论"] = "合格"
+    return out
+
+
+QC_FIELDS = [("GHSJ", "挂号时间"), ("YSDM_text", "就诊医生"), ("BRXM", "姓名"),
+             ("ZYZD", "病人诊断"), ("MZHM", "门诊号码"),
+             ("_Q_LMP", "末次月经"), ("_Q_CALC", "计算孕周"), ("_Q_ZS", "主诉孕周"),
+             ("_Q_ZD", "诊断孕周"), ("_Q_WEEK", "孕周核对"), ("_Q_REFER", "转诊记录"),
+             ("_Q_FHR", "胎心音"), ("_Q_FUNDUS", "宫底描述"), ("_Q_RESULT", "结论")]
+
+
+def qc_pregnancy_records(page, rows, desc):
+    """对诊断含孕名单逐条读病历正文做书写质控，返回标注后的行。"""
+    slim = [{k: r.get(k) for k in ("GHXH", "BRBH", "JZXH", "JGID", "GHSJ")} for r in rows]
+    try:
+        records = page.evaluate(FETCH_RECORDS_JS, slim)
+    except Exception as e:
+        print(f"  [失败] {desc}：读取病历正文异常 {e}")
+        FAILED_STEPS.append(desc + "(读病历)")
+        return None
+    ok_cnt = 0
+    for r in rows:
+        rec = records.get(str(r.get("GHXH"))) or {}
+        if rec.get("error"):
+            qc = {"末次月经": "", "计算孕周": "", "主诉孕周": "", "诊断孕周": "",
+                  "孕周核对": "需复核(病历读取失败)", "转诊记录": "", "胎心音": "",
+                  "宫底描述": "", "结论": "需复核"}
+        else:
+            qc = qc_pregnancy_record(r, rec)
+        r["_Q_LMP"] = qc["末次月经"]
+        r["_Q_CALC"] = qc["计算孕周"]
+        r["_Q_ZS"] = qc["主诉孕周"]
+        r["_Q_ZD"] = qc["诊断孕周"]
+        r["_Q_WEEK"] = qc["孕周核对"]
+        r["_Q_REFER"] = qc["转诊记录"]
+        r["_Q_FHR"] = qc["胎心音"]
+        r["_Q_FUNDUS"] = qc["宫底描述"]
+        r["_Q_RESULT"] = qc["结论"]
+        if qc["结论"] == "合格":
+            ok_cnt += 1
+    n_bad = sum(1 for r in rows if r["_Q_RESULT"] == "不合格")
+    n_check = sum(1 for r in rows if r["_Q_RESULT"] == "需复核")
+    print(f"  [成功] {desc}：合格 {ok_cnt} 条，需复核 {n_check} 条，不合格 {n_bad} 条")
+    return rows
 
 
 # 延迟分类三表的输出列：基础列 + 末次月经 + 检验结果 + 判定依据
@@ -836,6 +1036,102 @@ def fubao_check():
                 # 表二（无说明）和表三（有说明）合并输出，靠"判定依据"列区分
                 save_excel(tables[2] + tables[3], f"妇保-月经延迟_{ym}.xlsx",
                            "表二+表三 合并名单", fields=DELAY_FIELDS)
+
+        # ========== 6. 诊断查询=孕（先清空前几步用过的筛选条件） ==========
+        print("13. 诊断查询=孕（清空年龄/末次月经/就诊类型筛选）...")
+        # 第12步读病历正文可能让活动标签页跑偏，先把「就诊历史记录」标签页激活回来
+        run_click(page, locate(r"""
+            const tab = Array.from(document.querySelectorAll('li[class*="x-mytab-strip"]'))
+                .find(li => (li.textContent || '').includes('就诊历史记录') && onScreen(li));
+            if (!tab) return false;
+            tab.setAttribute('data-kimi-click', '1');
+            return true;
+        """), "激活就诊历史记录标签页", timeout=8, quiet=True, record=False)
+        time.sleep(1)
+        # 前面分类读取病历后表单可能处于过渡状态，先 Escape 收弹层再等一下
+        page.keyboard.press("Escape")
+        time.sleep(1)
+        # 年龄清空用 Ext setValue（第12步后表单行可能不可见，键盘定位会失败）；
+        # 三个下拉恢复"全部"（这个系统里"全部"就是空值，getValue 返回 ''）
+        clr_ok = clear_field(page, "minYear", "清空最小年龄")
+        clr_ok = clear_field(page, "maxYear", "清空最大年龄") and clr_ok
+        clr_ok = pick_combo(page, "hasMCYJ", "全部", "填写末次月经=全部") and clr_ok
+        clr_ok = pick_combo(page, "hasMCYJYC", "全部", "末次月经延迟35天=全部") and clr_ok
+        clr_ok = pick_combo(page, "jzlx", "全部", "就诊类型=全部") and clr_ok
+        # 「诊断查询」是查询字段选择器的一个选项：选择器没有语义 name，
+        # 用"值输入框（门诊号码=MZHM/诊断查询=ZYZD）左边紧邻的下拉"定位它，选「诊断查询」
+        zd_ok = run_click(page, "() => {" + PANEL_JS + r"""
+            const pel = panelEl();
+            if (!pel) return false;
+            const valInp = Array.from(pel.querySelectorAll('input'))
+                .find(i => ['MZHM', 'ZYZD'].includes(i.name) && onScreen(i));
+            if (!valInp) return false;
+            let combo = null;
+            Ext.ComponentMgr.all.each(c => {
+                if (combo) return;
+                if (c instanceof Ext.form.ComboBox && c.el && c.el.dom && pel.contains(c.el.dom)) {
+                    const rc = c.el.dom.getBoundingClientRect();
+                    const vr = valInp.getBoundingClientRect();
+                    if (Math.abs(rc.y - vr.y) < 20 && rc.x < vr.x && vr.x - (rc.x + rc.width) < 150) combo = c;
+                }
+            });
+            if (!combo) return false;
+            const wrap = combo.el.dom.closest('.x-form-field-wrap');
+            const trig = wrap ? wrap.querySelector('.x-form-trigger') : null;
+            if (!trig) return false;
+            trig.setAttribute('data-kimi-click', '1');
+            return true;
+        }""", "展开查询字段选择器", timeout=10, quiet=True, record=False)
+        if zd_ok:
+            time.sleep(0.8)
+            zd_ok = run_click(page, locate(r"""
+                const lists = Array.from(document.querySelectorAll('.x-combo-list')).filter(l => {
+                    const st = window.getComputedStyle(l);
+                    const r = l.getBoundingClientRect();
+                    return st.display !== 'none' && r.width > 0 && r.x > -100;
+                });
+                const mine = lists.find(l => Array.from(l.querySelectorAll('.x-combo-list-item'))
+                    .some(i => (i.textContent || '').trim() === '诊断查询'));
+                if (!mine) return false;
+                const item = Array.from(mine.querySelectorAll('.x-combo-list-item'))
+                    .find(i => (i.textContent || '').trim() === '诊断查询');
+                if (!item) return false;
+                item.setAttribute('data-kimi-click', '1');
+                return true;
+            """), "选择诊断查询", timeout=5, quiet=True, record=False)
+            time.sleep(0.5)
+        # 选择器切到「诊断查询」后，后面的输入框 name 变成 ZYZD。
+        # 多个关键词逐个查询，结果合并去重（GHXH 挂号序号）后存同一个 Excel
+        KEYWORDS = ["月经延长", "停经", "孕", "妊娠", "胚胎", "试管",
+                    "黄体", "流产", "先兆", "人流", "药流", "辅助"]
+        all_rows, seen_gxh = [], set()
+        if clr_ok and zd_ok:
+            for kw in KEYWORDS:
+                if not type_field(page, "ZYZD", kw, f"诊断查询={kw}"):
+                    continue
+                if not search_and_wait(page, f"搜索 诊断含{kw}"):
+                    continue
+                rows = scrape_all(page, f"爬取 诊断含{kw}")
+                if not rows:
+                    continue
+                for r in rows:
+                    key = str(r.get("GHXH") or "") or (str(r.get("MZHM") or "") + str(r.get("GHSJ") or ""))
+                    if key and key not in seen_gxh:
+                        seen_gxh.add(key)
+                        all_rows.append(r)
+            fetch_contacts(page, all_rows, "诊断含孕名单")
+            save_excel(all_rows, f"妇保-诊断含孕_{ym}.xlsx",
+                       f"诊断关键词筛查名单（{len(KEYWORDS)}个关键词合并去重）")
+
+        # ========== 7. 诊断含孕病历书写质控 ==========
+        # 对名单里每份病历：核对孕周一致性（末次月经/主诉/初步诊断）、转诊记录、
+        # ≥16周的胎心音和宫底描述，逐项给结论
+        if all_rows:
+            print("14. 病历书写质控（诊断含孕名单，读病历正文逐项核对）...")
+            qc_rows = qc_pregnancy_records(page, all_rows, "病历书写质控")
+            if qc_rows:
+                save_excel(qc_rows, f"妇保-诊断含孕-病历质控_{ym}.xlsx",
+                           "病历质控名单", fields=QC_FIELDS)
 
         # ========== 汇总 ==========
         print("=" * 40)
