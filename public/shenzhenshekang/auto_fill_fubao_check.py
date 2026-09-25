@@ -7,7 +7,7 @@
    旧面板里残留的筛选清不掉，必须开全新面板才是干净状态）
 2. 点击"统计分析" → "就诊历史记录"（打开全新面板）→ 点"全院"（jzls=1）
 3. 挂号时间填入起止日期（命令行参数指定月份，如 `python auto_fill_fubao_check.py 7`
-   → 当年 7 月整月；留空默认上一个自然月）
+   → 当年 7 月整月；留空默认本月 1 号到今天）
 4. 女性 14-50 岁：键盘输入最小年龄14、最大年龄50
    4.1 下拉选"填写末次月经=未填写" → 搜索爬取
        → 妇保-末次月经未填写_女14-50_YYYY-MM.xlsx
@@ -854,22 +854,21 @@ DELAY_FIELDS = FIELDS + [("_MCYJ", "末次月经"), ("_JYJG", "检验结果"), (
 
 
 def month_range(month_arg=""):
-    """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-月末')。
-    month_arg 为空：上一个自然月；为 1-12：该年该月，
-    月份大于当前月份时取上一年（如 1 月查去年 12 月）。"""
+    """返回起止日期 ('yyyy-mm-01', 结束日)。
+    month_arg 为空：本月 1 号到今天（如 9 月 25 日运行 → 09-01 至 09-25）；
+    为 1-12：该年该月整月，月份大于当前月份时取上一年（如 1 月查去年 12 月）。"""
     now = datetime.now()
     if month_arg:
         month = int(month_arg)
         if not 1 <= month <= 12:
             raise ValueError(f"月份必须是 1-12，收到: {month_arg!r}")
         year = now.year - 1 if month > now.month else now.year
+        last_day = calendar.monthrange(year, month)[1]
+        end = f"{year}-{month:02d}-{last_day:02d}"
     else:
-        year, month = now.year, now.month - 1
-        if month == 0:
-            month = 12
-            year -= 1
-    last_day = calendar.monthrange(year, month)[1]
-    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"
+        year, month = now.year, now.month
+        end = now.strftime("%Y-%m-%d")
+    return f"{year}-{month:02d}-01", end
 
 
 def fubao_check():
@@ -979,7 +978,7 @@ def fubao_check():
             return target ? target.checked : false;
         }""")
 
-        # ========== 4. 挂号时间：命令行参数指定月份，默认上月 ==========
+        # ========== 4. 挂号时间：命令行参数指定月份，默认本月至今 ==========
         month_arg = sys.argv[1].strip() if len(sys.argv) > 1 else ""
         try:
             start_date, end_date = month_range(month_arg)
