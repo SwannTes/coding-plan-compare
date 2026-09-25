@@ -7,12 +7,19 @@
    旧面板里残留的筛选清不掉，必须开全新面板才是干净状态）
 2. 点击"统计分析" → "诊疗项目统计"（模块 li id = CIC_module_IVC20，实测）
 3. 开始/结束时间填入起止日期（命令行参数指定月份，如
-   `python auto_fill_hcg_check.py 5` → 当年 5 月整月；留空默认本月 1 号至今天，
+   `python auto_fill_hcg_check.py 5` → 当年 5 月整月；留空默认上一个自然月，
    与 fubao/monthly 脚本一致；也兼容 2026-05 这种 yyyy-mm 写法）
 4. 循环项目名列表 ITEM_NAMES：清空并输入项目名 → 点"查询" →
    翻页爬取全部结果行 → 打印到控制台
-5. 全部项目的结果导出到桌面一个 Excel（血尿HCG检查_起至止.xlsx），
-   每个项目一个 sheet（sheet 名用项目名，非法字符替换、超长截断）
+5. 关联患者信息（collect_patient_info）：收费行只有姓名+开单日期，没有病人编号，
+   自动打开"就诊历史记录"（全院、同一月份），按姓名逐个搜索爬取就诊记录，
+   按 姓名+日期 匹配后：年龄取就诊记录的 CSNY；完整电话按 EMPIID 走
+   phis.simpleQuery(MPI_DemographicInfo)（store 里电话是脱敏值）；
+   检查结果调 loadClinicInfo(type=5) 读 jy_data，提取 HCG 项目并判定——
+   血HCG数值 ≥10 阳性、5-10 可疑阳性、<5 阴性；尿妊娠等定性结果按文本（阴性/阳性/弱阳性）
+6. 全部项目的结果导出到桌面一个 Excel（血尿HCG检查_起至止.xlsx），
+   每个项目一个 sheet（sheet 名用项目名，非法字符替换、超长截断），
+   列 = 收费列 + 年龄/电话号码/检查结果/判定
 
 关键机制（沿用 auto_fill_monthly_check.py 实测趟出来的方案）：
 - 系统的"导出"按钮不可用，改为直接读结果表格的 Ext store 数据（含全部字段）。
@@ -72,6 +79,15 @@ FIELDS = [
     ("ZFRQ", "作废日期"),
 ]
 
+# Excel 实际输出列：收费列 + 关联就诊记录收集的患者信息
+# （_NL 年龄、_DH 电话号码、_JYJG 检查结果、_PD 判定，由 collect_patient_info 回填）
+EXCEL_FIELDS = FIELDS + [
+    ("_NL", "年龄"),
+    ("_DH", "电话号码"),
+    ("_JYJG", "检查结果"),
+    ("_PD", "判定"),
+]
+
 # 当前活动标签页的面板定位 + 面板内组件查找（多标签页字段冲突，必须限定面板）
 PANEL_JS = r"""
     const onScreen = el => {
@@ -124,14 +140,7 @@ PANEL_JS = r"""
     };
 """
 
-# 点查询前在 store 上挂 load 钩子（真实点击由 run_click 完成，evaluate 期间无法点击）
-HOOK_SEARCH_JS = "() => {" + PANEL_JS + r"""
-    const g = findGrid();
-    if (!g) return false;
-    window.__searchDone = false;
-    g.getStore().on('load', () => { window.__searchDone = true; });
-    return true;
-}"""
+# 点查询前挂 load 钩子的逻辑已并入 search_and_wait（按面板参数化）
 
 # 翻页爬取全部结果：走分页工具栏 moveNext（游标校验），store.load({params:{start}}) 无效；
 # store 没有序号类唯一键，按整行 JSON 去重兜底，同一行不会因翻页抖动重复入表
@@ -171,6 +180,128 @@ SCRAPE_JS = "async () => {" + PANEL_JS + r"""
         if (++guard > 50) return {error: '翻页次数超限', collected: Object.keys(seen).length};
     }
     return {total, rows: Object.values(seen)};
+}"""
+
+# ========== 就诊历史记录（按姓名关联患者信息，收集年龄/电话/检查结果） ==========
+# 收费行只有姓名+开单日期，没有病人编号，必须去就诊历史记录按姓名搜出就诊记录
+# （拿到 JZXH/EMPIID/CSNY），再用 loadClinicInfo 读检验结果、MPI 档案读完整电话
+JZLS_PANEL_JS = r"""
+    const onScreen = el => {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        if (r.x < -100 || r.y < -100) return false;
+        let a = el;
+        while (a && a !== document.body) {
+            if (window.getComputedStyle(a).display === 'none') return false;
+            a = a.parentElement;
+        }
+        return true;
+    };
+    const panelEl = () => {
+        const tab = document.querySelector('li.x-mytab-strip-active, li.x-mytab-strip-act');
+        if (!tab || tab.id.indexOf('__') < 0) return null;
+        const panel = Ext.getCmp(tab.id.split('__')[1]);
+        return panel && panel.el && panel.el.dom ? panel.el.dom : null;
+    };
+    // 就诊历史记录的结果表格按 ISPERFECT 列认（区别于诊疗项目统计的 FYMC）
+    const findGrid = () => {
+        const pel = panelEl();
+        if (!pel) return null;
+        let grid = null;
+        Ext.ComponentMgr.all.each(c => {
+            if (grid) return;
+            if (c instanceof Ext.grid.GridPanel && c.getColumnModel && c.el && c.el.dom
+                && pel.contains(c.el.dom)
+                && (c.getColumnModel().config || []).some(col => col.dataIndex === 'ISPERFECT')) {
+                grid = c;
+            }
+        });
+        return grid;
+    };
+"""
+
+# 就诊历史记录翻页爬取：分页条是 grid.getBottomToolbar()（与诊疗项目统计不同），
+# 按 GHXH（挂号序号）去重兜底（与 fubao 脚本一致）
+JZLS_SCRAPE_JS = "async () => {" + JZLS_PANEL_JS + r"""
+    const grid = findGrid();
+    if (!grid) return {error: '未找到结果表格组件'};
+    const store = grid.getStore();
+    const bbar = grid.getBottomToolbar();
+    if (!bbar) return {error: '未找到分页工具栏'};
+    if (bbar.cursor !== 0) {
+        await new Promise(res => {
+            const h = () => { store.un('load', h); res(); };
+            store.on('load', h);
+            bbar.moveFirst();
+            setTimeout(res, 8000);
+        });
+    }
+    const total = store.getTotalCount();
+    const seen = {};
+    let guard = 0;
+    while (true) {
+        store.each(rec => { seen[rec.data.GHXH] = rec.data; });
+        if (bbar.cursor + bbar.pageSize >= total) break;
+        const before = bbar.cursor;
+        let advanced = false;
+        for (let attempt = 0; attempt < 3 && !advanced; attempt++) {
+            await new Promise(res => {
+                const h = () => { store.un('load', h); res(); };
+                store.on('load', h);
+                bbar.moveNext();
+                setTimeout(res, 8000);
+            });
+            advanced = bbar.cursor > before;
+        }
+        if (!advanced) return {error: '翻页失败(cursor=' + before + ')', collected: Object.keys(seen).length};
+        if (++guard > 400) return {error: '翻页次数超限', collected: Object.keys(seen).length};
+    }
+    return {total, rows: Object.values(seen)};
+}"""
+
+# 批量读取检验结果：对每条就诊记录调系统内部接口 loadClinicInfo（与 fubao 脚本相同），
+# type=5 返回 jy_data（检验结果）。入参 clinicId/brid 必须传字符串；必须带 jgid；
+# 跨年数据要带 q_YEAR（病历按年分表）。返回 {GHXH: {jy, error}}
+FETCH_RECORDS_JS = "async (rows) => {" + r"""
+    const curYear = new Date().getFullYear();
+    const out = {};
+    for (const r of rows) {
+        const key = String(r.GHXH);
+        try {
+            const body = {clinicId: String(r.JZXH), jgid: String(r.JGID),
+                          type: "5", brid: String(r.BRBH)};
+            const year = parseInt(String(r.GHSJ || '').substring(0, 4));
+            const req = {serviceId: "clinicManageService", serviceAction: "loadClinicInfo",
+                         body: body};
+            if (year && year !== curYear) req.q_YEAR = String(year);
+            const res = phis.script.rmi.miniJsonRequestSync(req);
+            const j = res.json || {};
+            out[key] = {jy: j.jy_data || [], error: j.ms_bcjl ? "" : ("病历为空(code=" + res.code + ")")};
+        } catch (e) {
+            out[key] = {jy: [], error: String(e)};
+        }
+    }
+    return out;
+}"""
+
+# 按 EMPIID 批量查完整电话（store 里电话是脱敏值，完整值在 EMPI 人口学信息，
+# 与 fubao 脚本相同：phis.simpleQuery + MPI_DemographicInfo）
+FETCH_CONTACTS_JS = "async (empiIds) => {" + r"""
+    const out = {};
+    for (const id of empiIds) {
+        try {
+            const res = phis.script.rmi.miniJsonRequestSync({
+                serviceId: "phis.simpleQuery", method: "execute",
+                schema: "phis.application.pix.schemas.MPI_DemographicInfo",
+                cnd: ["eq", ["$", "empiId"], ["s", String(id)]],
+                pageSize: 10, pageNo: 1});
+            const body = (res.json || {}).body || [];
+            const d = body[0];
+            if (!d) continue;
+            out[String(id)] = {dh: d.mobileNumber || d.contactPhone || d.phoneNumber || ""};
+        } catch (e) { /* 单个失败跳过 */ }
+    }
+    return out;
 }"""
 
 
@@ -273,16 +404,25 @@ def locate(body):
 """ + body + "\n}"
 
 
-def search_and_wait(page, desc, timeout=30):
+def search_and_wait(page, desc, timeout=30, panel_js=None):
     """在当前活动面板内点查询按钮并等结果加载完成。
     查询按钮必须真实鼠标点击（合成 click 无反应），所以拆成：挂 load 钩子 → 真实点击 → 等钩子。
     等 load 钩子触发才返回，保证读到的是本次查询的新数据（多项目循环时不会读到旧结果）。
-    注意面板里还有 button.excel（导出）和 button.print（打印），只认 button.query。"""
-    if not run_step(page, HOOK_SEARCH_JS, desc + "-挂钩子", timeout=10, quiet=True):
+    注意面板里还有 button.excel（导出）和 button.print（打印），只认 button.query。
+    panel_js 默认诊疗项目统计面板，传 JZLS_PANEL_JS 则操作就诊历史记录面板。"""
+    pj = panel_js or PANEL_JS
+    hook_js = "() => {" + pj + r"""
+        const g = findGrid();
+        if (!g) return false;
+        window.__searchDone = false;
+        g.getStore().on('load', () => { window.__searchDone = true; });
+        return true;
+    }"""
+    if not run_step(page, hook_js, desc + "-挂钩子", timeout=10, quiet=True):
         print(f"  [失败] {desc} —— 面板/表格未就绪")
         FAILED_STEPS.append(desc)
         return False
-    if not run_click(page, "() => {" + PANEL_JS + r"""
+    if not run_click(page, "() => {" + pj + r"""
         const pel = panelEl();
         if (!pel) return false;
         const btn = pel.querySelector('button.query');
@@ -332,10 +472,11 @@ def type_field(page, field_name, text, desc):
     return ok
 
 
-def scrape_all(page, desc):
-    """翻页爬取当前查询结果的全部行，失败返回 None。"""
+def scrape_all(page, desc, scrape_js=None):
+    """翻页爬取当前查询结果的全部行，失败返回 None。
+    scrape_js 默认诊疗项目统计的翻页逻辑，就诊历史记录传 JZLS_SCRAPE_JS。"""
     try:
-        r = page.evaluate(SCRAPE_JS)
+        r = page.evaluate(scrape_js or SCRAPE_JS)
     except Exception as e:
         print(f"  [失败] {desc}：爬取异常 {e}")
         FAILED_STEPS.append(desc)
@@ -346,6 +487,308 @@ def scrape_all(page, desc):
         return None
     print(f"  [成功] {desc}：爬取 {len(r['rows'])} 行（总数 {r['total']}）")
     return r["rows"]
+
+
+def extract_hcg_result(jy_data):
+    """从检验结果（jy_data）里找 HCG 相关项目，返回 (检查结果摘要, 判定)。
+    血HCG数值：>=10 阳性，5-10 可疑阳性，<5 阴性；定性结果（尿妊娠等）按文本。"""
+    hits = []
+    for it in jy_data or []:
+        label = str(it.get("ITEMNAME") or "") + str(it.get("EXAMITEMNAME") or "")
+        if "HCG" in label.upper() or "绒毛膜" in label or "妊娠" in label:
+            hits.append(it)
+    if not hits:
+        return "", ""
+    parts, verdict = [], ""
+    for it in hits:
+        label = (it.get("ITEMNAME") or it.get("EXAMITEMNAME") or "").strip()
+        res = str(it.get("TESTRESULT") or "").strip()
+        unit = str(it.get("RESULTUNIT") or "").strip()
+        msg = str(it.get("RESULTMESSAGE") or "").strip()
+        parts.append(f"{label}={res}{unit}" if res else (f"{label}={msg}" if msg else label))
+        # 数值结果可能带不等号前缀（如 <0.20），剥掉再按阈值判定
+        try:
+            val = float(re.sub(r"^[<≤>≥\s]+", "", res))
+        except ValueError:
+            text = msg or res
+            if "弱阳" in text:
+                v = "弱阳性"
+            elif "阳" in text:
+                v = "阳性"
+            elif "阴" in text:
+                v = "阴性"
+            else:
+                v = text
+        else:
+            if val >= 10:
+                v = f"阳性({val}{unit}≥10)"
+            elif val >= 5:
+                v = f"可疑阳性({val}{unit}5-10)"
+            else:
+                v = f"阴性({val}{unit}<5)"
+        if not verdict or "阳" in v:  # 多项结果时阳性优先
+            verdict = v
+    return "；".join(parts)[:200], verdict
+
+
+def fetch_phones(page, fee_rows, desc):
+    """按收费行关联到的 _EMPIID 批量查完整电话，返回 {empiId: {dh}}。失败只警告。"""
+    empi_ids = sorted({str(v.get("_EMPIID")) for v in fee_rows if v.get("_EMPIID")})
+    if not empi_ids:
+        return {}
+    try:
+        return page.evaluate(FETCH_CONTACTS_JS, empi_ids)
+    except Exception as e:
+        print(f"  [失败] {desc}：查电话异常 {e}")
+        FAILED_STEPS.append(desc + "(查电话)")
+        return {}
+
+
+def pick_query_field_brxm(page, desc="查询方式=姓名"):
+    """就诊历史记录的查询条件下拉默认是"门诊号码"，此时面板里没有 input[name=BRXM]；
+    下拉切到"姓名"后旁边文本框的 name 才变成 BRXM（实测踩过：直接找 BRXM 输入框永远找不到）。
+    下拉组件 id 是 ext-comp-* 不稳定的，按"选项里同时有 门诊号码/姓名"签名定位。"""
+    FIND_JS = "() => {" + JZLS_PANEL_JS + r"""
+        const pel = panelEl();
+        if (!pel) return false;
+        // 已经有 BRXM 输入框就不用切
+        if (Array.from(pel.querySelectorAll('input[name="BRXM"]')).find(onScreen)) return 'ready';
+        let found = null;
+        Ext.ComponentMgr.all.each(c => {
+            if (found) return;
+            if (c instanceof Ext.form.ComboBox && c.el && c.el.dom && pel.contains(c.el.dom)
+                && c.getStore && c.valueField === 'value') {
+                const vals = [];
+                c.getStore().each(r => vals.push(String(r.data.value)));
+                if (vals.includes('MZHM') && vals.includes('BRXM') && onScreen(c.el.dom)) found = c;
+            }
+        });
+        if (!found) return false;
+        if (String(found.getValue()) === 'BRXM') return 'ready';
+        return found.id;
+    }"""
+    for attempt in range(3):
+        try:
+            st = page.evaluate(FIND_JS)
+        except Exception:
+            st = False
+        if st == 'ready':
+            print(f"  [成功] {desc}")
+            return True
+        if not st:
+            time.sleep(1)
+            continue
+        # 点触发箭头展开下拉
+        run_click(page, "() => {" + JZLS_PANEL_JS + f"""
+            const c = Ext.getCmp({json.dumps(st)});
+            if (!c) return false;
+            const wrap = c.el.dom.closest('.x-form-field-wrap');
+            const trig = wrap ? wrap.querySelector('.x-form-trigger') : null;
+            if (!trig || !onScreen(trig)) return false;
+            trig.setAttribute('data-kimi-click', '1');
+            return true;
+        }}""", desc + "-开下拉", timeout=5, quiet=True, record=False)
+        time.sleep(0.8)
+        # 在属于该下拉的列表里点"姓名"（签名：同一列表里有"门诊号码"）
+        if run_click(page, locate(r"""
+            const lists = Array.from(document.querySelectorAll('.x-combo-list')).filter(l => {
+                const st = window.getComputedStyle(l);
+                const r = l.getBoundingClientRect();
+                return st.display !== 'none' && r.width > 0 && r.x > -100;
+            });
+            const mine = lists.find(l => Array.from(l.querySelectorAll('.x-combo-list-item'))
+                .some(i => (i.textContent || '').trim() === '门诊号码'));
+            if (!mine) return false;
+            const item = Array.from(mine.querySelectorAll('.x-combo-list-item'))
+                .find(i => (i.textContent || '').trim() === '姓名');
+            if (!item) return false;
+            item.setAttribute('data-kimi-click', '1');
+            return true;
+        """), desc + "-选姓名", timeout=4, quiet=True, record=False):
+            # 回读确认 BRXM 输入框已出现
+            if run_step(page, "() => {" + JZLS_PANEL_JS + r"""
+                const pel = panelEl();
+                if (!pel) return false;
+                return !!Array.from(pel.querySelectorAll('input[name="BRXM"]')).find(onScreen);
+            }""", desc, timeout=3, quiet=True, record=False):
+                print(f"  [成功] {desc}")
+                return True
+        time.sleep(0.5)
+    print(f"  [失败] {desc} —— 3 次尝试后仍未成功，请手动把查询方式切到姓名")
+    FAILED_STEPS.append(desc)
+    return False
+
+
+def collect_patient_info(page, results, start_date, end_date):
+    """把收费行按 姓名+开单/收费日期 关联到就诊历史记录的就诊记录，
+    回填 _NL（年龄）_DH（电话）_JYJG（检查结果）_PD（判定）四个字段供 Excel 输出。
+    每步失败只警告不中断，行上留空或提示文字。"""
+    fee_rows = []
+    for _, rows in results:
+        for r in rows or []:
+            if str(r.get("ZFRQ") or "").strip():
+                continue  # 作废单不收集
+            fee_rows.append(r)
+    if not fee_rows:
+        return
+    names = sorted({str(r.get("BRXM") or "").strip() for r in fee_rows} - {""})
+    print(f"10. 关联就诊历史记录收集患者信息（{len(fee_rows)} 行收费，{len(names)} 人）...")
+
+    # 1) 关闭旧的就诊历史记录标签页（筛选条件服务端粘滞，必须开全新面板）
+    closed = 0
+    LOCATE_CLOSE = locate(r"""
+        const tab = Array.from(document.querySelectorAll('li.x-mytab-strip-closable'))
+            .find(li => (li.textContent || '').includes('就诊历史记录') && onScreen(li));
+        if (!tab) return false;
+        const close = tab.querySelector('a.x-mytab-strip-close');
+        if (!close) return false;
+        close.setAttribute('data-kimi-click', '1');
+        return true;
+    """)
+    for _ in range(5):
+        try:
+            found = page.evaluate(LOCATE_CLOSE)
+        except Exception:
+            found = False
+        if not found:
+            break
+        try:
+            page.locator('[data-kimi-click="1"]').first.click(timeout=3000)
+            closed += 1
+        except Exception:
+            break
+        finally:
+            page.evaluate("() => document.querySelectorAll('[data-kimi-click]')"
+                          ".forEach(e => e.removeAttribute('data-kimi-click'))")
+        time.sleep(1)
+
+    # 2) 统计分析 → 就诊历史记录（菜单项 li id = CIC_module_CIC02，实测稳定）
+    if not run_click(page, locate(r"""
+        const links = Array.from(document.querySelectorAll('a')).filter(a =>
+            (a.textContent || '').trim() === '统计分析' && onScreen(a));
+        if (!links.length) return false;
+        links[0].setAttribute('data-kimi-click', '1');
+        return true;
+    """), "点击统计分析", timeout=15):
+        return
+    if not run_click(page, locate(r"""
+        let link = null;
+        const li = document.getElementById('CIC_module_CIC02');
+        if (li) link = li.querySelector('a') || li;
+        if (!link || !onScreen(link)) {
+            link = Array.from(document.querySelectorAll('a')).find(a =>
+                (a.textContent || '').trim() === '就诊历史记录' && onScreen(a)
+                && !a.closest('.x-mytab-strip, [class*="x-mytab"]'));
+        }
+        if (!link || !onScreen(link)) return false;
+        link.setAttribute('data-kimi-click', '1');
+        return true;
+    """), "点击就诊历史记录", timeout=15):
+        return
+    time.sleep(2)
+
+    # 3) 点全院（jzls=1，本人范围会漏掉其他医生开的单）
+    run_click(page, "() => {" + JZLS_PANEL_JS + r"""
+        const pel = panelEl();
+        if (!pel) return false;
+        const target = Array.from(pel.querySelectorAll('input[type="radio"][name="jzls"]'))
+            .find(r => r.value === '1' && onScreen(r));
+        if (!target) return false;
+        target.setAttribute('data-kimi-click', '1');
+        return true;
+    }""", "选择全院", verify_js="() => {" + JZLS_PANEL_JS + r"""
+        const pel = panelEl();
+        if (!pel) return false;
+        const target = Array.from(pel.querySelectorAll('input[type="radio"][name="jzls"]'))
+            .find(r => r.value === '1' && onScreen(r));
+        return target ? target.checked : false;
+    }""")
+
+    # 4) 挂号时间 = 整个查询月份（日期必须用 Ext API setValue 写入）
+    run_step(page, "() => {" + JZLS_PANEL_JS + f"""
+        const pel = panelEl();
+        if (!pel) return false;
+        const setDate = (id, val) => {{
+            const el = pel.querySelector('#' + id);
+            if (!el) return false;
+            const c = Ext.getCmp(el.id);
+            if (c && c.setValue) {{ c.setValue(val); return c.getRawValue() === val; }}
+            el.value = val;
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return el.value === val;
+        }};
+        return setDate('startDate', {json.dumps(start_date)})
+            && setDate('endDate', {json.dumps(end_date)});
+    }}""", "填写挂号时间范围")
+
+    # 4.1) 查询方式切到"姓名"（默认"门诊号码"，此时面板里没有 input[name=BRXM]）
+    if not pick_query_field_brxm(page):
+        return
+
+    # 5) 按姓名逐个搜索爬取就诊记录（Ctrl+A 全选替换，不用手动清空上一个姓名）
+    visits_by_name = {}
+    for i, name in enumerate(names, 1):
+        desc = f"[{i}/{len(names)}] {name}"
+        if not type_field(page, "BRXM", name, f"姓名={name}"):
+            continue
+        if search_and_wait(page, f"搜索 {desc}", panel_js=JZLS_PANEL_JS):
+            rows = scrape_all(page, f"爬取 {desc}", scrape_js=JZLS_SCRAPE_JS)
+            if rows is not None:
+                visits_by_name[name] = rows
+
+    # 6) 收费行匹配就诊记录（姓名相同 + 挂号日期 = 开单或收费日期）
+    matched, unmatched = [], 0
+    for r in fee_rows:
+        name = str(r.get("BRXM") or "").strip()
+        dates = {str(r.get(k) or "")[:10] for k in ("KDRQ", "SFRQ")} - {""}
+        cands = [v for v in visits_by_name.get(name, [])
+                 if str(v.get("GHSJ") or "")[:10] in dates]
+        if cands:
+            r["_VISITS"] = cands
+            matched.extend(cands)
+        else:
+            unmatched += 1
+            r["_JYJG"] = "未匹配到就诊记录"
+            r["_NL"] = r["_DH"] = r["_PD"] = ""
+    if unmatched:
+        print(f"  [警告] {unmatched} 行收费未匹配到就诊记录（姓名+日期对不上）")
+
+    # 7) 批量读检验结果，提取 HCG 并判定；同一就诊记录只读一次
+    uniq = {str(v.get("GHXH")): v for v in matched}
+    if uniq:
+        slim = [{k: v.get(k) for k in ("GHXH", "BRBH", "JZXH", "JGID", "GHSJ")}
+                for v in uniq.values()]
+        try:
+            records = page.evaluate(FETCH_RECORDS_JS, slim)
+        except Exception as e:
+            print(f"  [失败] 读检验结果异常 {e}")
+            FAILED_STEPS.append("读检验结果")
+            records = {}
+        for ghxh, v in uniq.items():
+            rec = records.get(ghxh) or {}
+            v["_JYJG"], v["_PD"] = extract_hcg_result(rec.get("jy") or [])
+            if rec.get("error") and not v["_JYJG"]:
+                v["_JYJG"] = "检验结果读取失败:" + str(rec["error"])[:40]
+
+    # 8) 回填到收费行：候选就诊里优先取能查到 HCG 结果的那条
+    for r in fee_rows:
+        cands = r.pop("_VISITS", [])
+        if not cands:
+            continue
+        pick = next((v for v in cands if v.get("_JYJG")), cands[0])
+        r["_NL"] = pick.get("CSNY") or ""
+        r["_JYJG"] = pick.get("_JYJG") or "该次就诊无HCG检验结果"
+        r["_PD"] = pick.get("_PD") or ""
+        r["_EMPIID"] = pick.get("EMPIID") or ""
+
+    # 9) 完整电话（store 里是脱敏值，走 MPI 档案接口）
+    phones = fetch_phones(page, [r for r in fee_rows if r.get("_EMPIID")], "查电话")
+    for r in fee_rows:
+        c = phones.get(str(r.get("_EMPIID") or "")) or {}
+        r["_DH"] = c.get("dh") or ""
+    filled = sum(1 for r in fee_rows if r.get("_JYJG") and "未匹配" not in r["_JYJG"])
+    print(f"  [成功] 患者信息收集完成：{len(fee_rows)} 行收费，"
+          f"{filled} 行查到检验结果，{sum(1 for r in fee_rows if r.get('_DH'))} 行查到电话")
 
 
 def safe_sheet_name(name, used):
@@ -374,9 +817,9 @@ def save_excel(results, filename, desc):
             if rows is None:
                 continue
             ws = wb.create_sheet(safe_sheet_name(item_name, used))
-            ws.append([h for _, h in FIELDS])
+            ws.append([h for _, h in EXCEL_FIELDS])
             for row in rows:
-                ws.append([row.get(k) if row.get(k) is not None else "" for k, _ in FIELDS])
+                ws.append([row.get(k) if row.get(k) is not None else "" for k, _ in EXCEL_FIELDS])
         if not wb.sheetnames:
             print(f"  [失败] {desc}：没有任何项目的数据可写")
             FAILED_STEPS.append(desc + "(写Excel)")
@@ -405,7 +848,7 @@ def print_rows(rows):
 
 def month_range(month_arg=""):
     """返回起止日期 ('yyyy-mm-01', 'yyyy-mm-月末')。
-    与 fubao/monthly 脚本一致：month_arg 为空 → 本月 1 号到今天；为 1-12 → 该年该月整月，
+    与 fubao/monthly 脚本一致：month_arg 为空 → 上一个自然月；为 1-12 → 该年该月，
     月份大于当前月份时取上一年（如 1 月查去年 12 月）。
     另外兼容 'yyyy-mm' 写法（如 2026-05），方便直接指定年月。
     月末日期由 calendar.monthrange 算，28/29/30/31 天自动处理。"""
@@ -420,17 +863,18 @@ def month_range(month_arg=""):
             if not 1 <= month <= 12:
                 raise ValueError(f"月份必须是 1-12，收到: {month_arg!r}")
             year = now.year - 1 if month > now.month else now.year
-        last_day = calendar.monthrange(year, month)[1]
-        end = f"{year}-{month:02d}-{last_day:02d}"
     else:
-        year, month = now.year, now.month
-        end = now.strftime("%Y-%m-%d")
-    return f"{year}-{month:02d}-01", end
+        year, month = now.year, now.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"
 
 
 def hcg_check():
     print("1. 开始启动...")
-    # 月份参数：命令行第 1 个参数（面板输入框也是传到这里），留空默认本月至今
+    # 月份参数：命令行第 1 个参数（面板输入框也是传到这里），留空默认上个月
     month_arg = sys.argv[1].strip() if len(sys.argv) > 1 else ""
     try:
         start_date, end_date = month_range(month_arg)
@@ -571,8 +1015,11 @@ def hcg_check():
                     print("  [提示] 查询结果 0 行：条件和面板填写均已校验成功，"
                           "请人工确认该时间段内确实无此项目数据")
 
-        # ========== 5. 导出 Excel（一个文件，每项目一个 sheet） ==========
-        print("10. 导出 Excel...")
+        # ========== 5. 关联就诊历史记录，收集患者年龄/电话/检查结果 ==========
+        collect_patient_info(page, results, start_date, end_date)
+
+        # ========== 6. 导出 Excel（一个文件，每项目一个 sheet） ==========
+        print("11. 导出 Excel...")
         save_excel(results, f"血尿HCG检查_{start_date}至{end_date}.xlsx", "血尿HCG检查结果")
 
         # ========== 汇总 ==========

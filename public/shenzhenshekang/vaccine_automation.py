@@ -179,6 +179,26 @@ async def find_unprescribed_patient(page):
     log("未找到未开处方患者")
     return False
 
+async def refresh_list(page):
+    """每轮开始前刷新页面，让列表拉到最新患者。
+    系统列表不再自动刷出新病人（手动刷新才出），所以每轮轮询先 reload。"""
+    try:
+        if "login" in page.url.lower():
+            log("当前在登录页，跳过刷新")
+            return
+        await page.reload(wait_until="domcontentloaded", timeout=30000)
+        # 等列表渲染出来（分页器/表格/处方按钮任一出现，最多15秒）
+        try:
+            await page.wait_for_selector('.el-pagination, .el-table, .case_analysis', timeout=15000)
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+        log("已刷新页面，获取最新患者列表")
+        if "login" in page.url.lower():
+            log("警告：刷新后跳到登录页，会话可能已过期，请重新登录")
+    except Exception as e:
+        log(f"刷新页面失败: {e}")
+
 async def process_vaccine_prescription(page, browser):
     """处理疫苗处方"""
     log("开始处理疫苗处方...")
@@ -186,6 +206,9 @@ async def process_vaccine_prescription(page, browser):
     try:
         # 0. 上一轮异常退出可能遗留开着的弹窗（会挡住页面所有点击），先关掉再开始
         await close_prescription_dialog(page)
+
+        # 0.1 刷新页面拿最新患者列表（系统列表不自动出新病人）
+        await refresh_list(page)
 
         # 1. 点击有未开处方标志的患者
         log("步骤1: 查找并点击未开处方患者")
