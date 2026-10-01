@@ -13,7 +13,7 @@ export default function Home() {
     },
     {
       q: "哪个平台性价比最高？",
-      a: "入门体验推荐腾讯云 Lite 或小米 MiMo Lite（均 ¥39/月），MiniMax Plus（¥49/月）也值得考虑。看重模型多样性选火山引擎方舟，看重 MCP 工具选智谱 GLM。注意：Kimi 目前暂停新用户订阅，阿里云仅剩 Pro 档（¥200/月）。",
+      a: "入门体验推荐腾讯云 Lite 或小米 MiMo Lite（均 ¥39/月），MiniMax Go（¥49/月，新上线 M Plan 首月 5 折）也值得考虑。看重模型多样性选火山引擎方舟，看重 MCP 工具选智谱 GLM。注意：Kimi 目前暂停新用户订阅，阿里云仅剩 Pro 档（¥200/月）。",
     },
     {
       q: "可以退款吗？",
