@@ -236,9 +236,10 @@ def fill_diabetes():
                 };
                 const imgs = document.querySelectorAll('img[title="糖尿病"]');
                 for (let img of imgs) {
-                    const a = img.closest('a');
-                    if (a && onScreen(a)) {
-                        a.setAttribute('data-kimi-click', '1');
+                    // a 是 inline 元素，img 又是浮动的，a 的宽度为 0，
+                    // 可见性必须检查 img 本身；点击 img 会冒泡触发 a 的点击事件
+                    if (onScreen(img)) {
+                        img.setAttribute('data-kimi-click', '1');
                         return true;
                     }
                 }
@@ -1013,6 +1014,38 @@ def fill_diabetes():
                         && (!officeInp || officeInp.value === "龙岗区人民医院内分泌科");
                 }
             """, "填写转诊原因及机构科别")
+        else:
+            # 控制满意：清空转诊信息。"复制随访记录/引用共享数据"可能把上一次随访
+            # （控制不满意时填的）转诊原因、机构及科别带进本次问卷，必须清掉
+            print("14.1 控制满意，清空转诊信息（如有残留）...")
+            run_step(page, """
+                () => {
+                    const visOk = el => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) return false;
+                        let a = el;
+                        while (a && a !== document.body) {
+                            if (window.getComputedStyle(a).display === 'none') return false;
+                            a = a.parentElement;
+                        }
+                        return true;
+                    };
+                    const reasonInp = Array.from(document.querySelectorAll('input[id^="referralReason_"]')).find(visOk);
+                    const officeInp = Array.from(document.querySelectorAll('input[id^="referralOffice_"]')).find(visOk);
+                    // 字段不存在视为无需处理
+                    if (!reasonInp && !officeInp) return true;
+                    for (const el of [reasonInp, officeInp]) {
+                        if (!el || !el.value) continue;
+                        el.value = "";
+                        el.style.color = "#000";
+                        for (const t of ['input', 'change', 'blur']) {
+                            el.dispatchEvent(new Event(t, { bubbles: true }));
+                        }
+                    }
+                    return (!reasonInp || reasonInp.value === "")
+                        && (!officeInp || officeInp.value === "");
+                }
+            """, "清空转诊原因及机构科别")
 
         # ========== 11. 用药情况：打开并保存 ==========
         print("15. 打开用药情况...")
