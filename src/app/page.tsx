@@ -41,7 +41,7 @@ export default function Home() {
           </div>
           <div className="flex flex-wrap justify-center gap-8 text-center">
             <div className="hero-stat">
-              <div className="text-4xl font-bold text-white">8</div>
+              <div className="text-4xl font-bold text-white">7</div>
               <div className="text-sm text-gray-400 mt-1">平台对比</div>
             </div>
             <div className="hero-stat">
