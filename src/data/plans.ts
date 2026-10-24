@@ -106,7 +106,7 @@ export const platforms: Platform[] = [
     subtitle: "K3.1 Pro 已上线，Plus 起可用 Kimi Code",
     icon: "🌙",
     color: "#8B5CF6",
-    url: "https://www.kimi.com/code?track_id=ae1fae7a-31fa-4bba-8bd1-cfc6cc58e0e3",
+    url: "https://kimi-bot.com/activities/zh-cn/invite/share?scenario=subscribe&from=share_poster&invitation_code=YWU74E",
     plans: [
       {
         name: "Go",
@@ -145,7 +145,7 @@ export const platforms: Platform[] = [
         features: ["更大额度", "更高任务并行", "高强度开发首选"],
       },
     ],
-    highlights: ["Plus 起含 Kimi Code（取消周限额）", "4 档套餐灵活选择", "年付最高立省 ¥1,680", "老套餐权益不受影响"],
+    highlights: ["Plus 起含 Kimi Code（取消周限额）", "4 档套餐灵活选择", "年付最高立省 ¥1,680", "邀请订阅：双方 100% 拿奖（最高 1 年会员权益）"],
     models: ["Kimi K3", "Kimi K2.7 Code", "Kimi K2.6"],
   },
   {
