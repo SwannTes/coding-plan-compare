@@ -103,7 +103,7 @@ export const platforms: Platform[] = [
   {
     id: "kimi",
     name: "Kimi",
-    subtitle: "新会员体系已上线，Plus 起可用 Kimi Code",
+    subtitle: "K3.1 Pro 已上线，Plus 起可用 Kimi Code",
     icon: "🌙",
     color: "#8B5CF6",
     url: "https://www.kimi.com/code?track_id=ae1fae7a-31fa-4bba-8bd1-cfc6cc58e0e3",
