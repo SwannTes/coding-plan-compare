@@ -98,7 +98,7 @@ export const platforms: Platform[] = [
       },
     ],
     highlights: ["M Plan 全新升级（原 Token Plan）", "1M 长上下文", "年付立省2个月"],
-    models: ["MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "H3（视频）"],
+    models: ["MiniMax-M3.1-Flash", "H3（视频）"],
   },
   {
     id: "kimi",
@@ -144,8 +144,17 @@ export const platforms: Platform[] = [
         badgeColor: "rgba(236,72,153,.15)",
         features: ["更大额度", "更高任务并行", "高强度开发首选"],
       },
+      {
+        name: "Ultra",
+        price: 1399,
+        priceUnit: "/月",
+        note: "年付 ¥13,428/年",
+        badge: "旗舰",
+        badgeColor: "rgba(236,72,153,.15)",
+        features: ["28 倍 Agent 额度（Max 的 2 倍）", "4 个 Agent 任务并行", "100 项目 + 50GB 存储"],
+      },
     ],
-    highlights: ["Plus 起含 Kimi Code（取消周限额）", "4 档套餐灵活选择", "年付最高立省 ¥1,680", "邀请订阅：双方 100% 拿奖（最高 1 年会员权益）"],
+    highlights: ["Plus 起含 Kimi Code（取消周限额）", "5 档套餐灵活选择", "年付最高立省 ¥3,360", "邀请订阅：双方 100% 拿奖（最高 1 年会员权益）"],
     models: ["Kimi K3", "Kimi K2.7 Code", "Kimi K2.6"],
   },
   {
@@ -176,7 +185,7 @@ export const platforms: Platform[] = [
       },
     ],
     highlights: ["11 款模型自由切换 + Auto", "邀请好友享 9.5 折", "包季同价更灵活"],
-    models: ["GLM-5.3", "GLM-5.3-Flash", "Kimi-K3", "Kimi-K2.8-Preview", "Kimi-K2.7-Code", "DeepSeek-V4-Pro", "DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "Doubao-Seed-2.1-Pro", "Doubao-Seed-Evolving", "MiniMax-M3"],
+    models: ["GLM-5.3", "GLM-5.3-Flash", "Kimi-K3", "Kimi-K3.1-Pro", "Kimi-K2.8-Preview", "DeepSeek-V4-Pro", "DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4.1-Flash-Economy", "Doubao-Seed-2.1-Pro", "Doubao-Seed-Evolving"],
   },
   {
     id: "aliyun",
@@ -244,7 +253,7 @@ export const platforms: Platform[] = [
         features: ["积分制计量", "Auto 智能路由", "GLM-5.3 / DeepSeek-V4 等"],
       },
     ],
-    highlights: ["原 Coding Plan 已停售", "积分制计量", "10 月指定模型抵扣 5 折起（至 10/30）", "Auto 路由 + 12 款模型"],
+    highlights: ["原 Coding Plan 已停售", "积分制计量", "Auto 路由 + 12 款模型"],
     models: ["Auto", "GLM-5.3", "GLM-5.3-Flash", "GLM-5.2", "Kimi-K3", "Kimi-K2.7-Code", "DeepSeek-V4-Pro", "DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "Hy4-Preview"],
   },
   {
@@ -262,7 +271,7 @@ export const platforms: Platform[] = [
         note: "41 亿 Credits",
         badge: "尝鲜入门",
         badgeColor: "rgba(255,107,53,.12)",
-        features: ["41 亿 Credits/月", "V2.5 全系列模型", "首购优惠价 ¥34.32/月"],
+        features: ["41 亿 Credits/月", "V2.6 全系列模型", "首购优惠价 ¥34/月"],
       },
       {
         name: "Standard",
@@ -271,7 +280,7 @@ export const platforms: Platform[] = [
         note: "110 亿 Credits",
         badge: "推荐",
         badgeColor: "rgba(239,68,68,.15)",
-        features: ["110 亿 Credits/月", "2.7x Lite 用量", "首购优惠价 ¥87.12/月"],
+        features: ["110 亿 Credits/月", "2.7x Lite 用量", "首购优惠价 ¥87/月"],
       },
       {
         name: "Pro",
@@ -280,7 +289,7 @@ export const platforms: Platform[] = [
         note: "380 亿 Credits",
         badge: "专业",
         badgeColor: "rgba(168,85,247,.15)",
-        features: ["380 亿 Credits/月", "9.3x Lite 用量", "首购优惠价 ¥289.52/月"],
+        features: ["380 亿 Credits/月", "9.3x Lite 用量", "首购优惠价 ¥289/月"],
       },
       {
         name: "Max",
@@ -289,17 +298,17 @@ export const platforms: Platform[] = [
         note: "820 亿 Credits",
         badge: "旗舰",
         badgeColor: "rgba(236,72,153,.15)",
-        features: ["820 亿 Credits/月", "20x Lite 用量", "首购优惠价 ¥579.92/月"],
+        features: ["820 亿 Credits/月", "20x Lite 用量", "首购优惠价 ¥579/月"],
       },
     ],
     highlights: [
-      "V2.6 全系模型上线（V2.5 系列 10/21 下线）",
+      "V2.6 全系模型",
       "Credits 额度全面升级 5~8 倍",
       "夜间 (0-8 点) 消耗 0.8 倍",
       "年付 88 折 + MiMo Claw 加购 ¥233.8/年",
       "邀请码注册：双方各得 ¥10 + 首单 9 折",
       "新增团队版（同价按席位计费）",
     ],
-    models: ["MiMo-V2.6-Pro", "MiMo-V2.6-Flash", "MiMo-V2.5-Pro", "MiMo-V2.5"],
+    models: ["MiMo-V2.6-Pro", "MiMo-V2.6-Flash"],
   },
 ];
