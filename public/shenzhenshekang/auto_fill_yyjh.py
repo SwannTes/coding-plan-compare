@@ -6,7 +6,8 @@
 流程：
 1. 从病历首页收集患者姓名、血压、血糖数据
 2. 点击健康档案下的医养结合服务链接（若问卷表单已打开则直接填当前表单）
-3. 填写问卷并保存
+3. 若随访列表里已有今天的记录，直接打开该记录填写（不重复点"增加"）；没有才新增
+4. 填写问卷并保存
 
 注意：页面会残留隐藏的旧问卷表单（同一字段在 DOM 里有多份，仅一份可见），
 且各字段的 ID 后缀可能不一致。所有元素定位必须只取可见元素、按 ID 前缀查找，
@@ -40,6 +41,167 @@ JS_HELPERS = """
 def js(body):
     """包装 evaluate 用的 JS 函数体，预置可见元素助手 __vis / __byPrefix"""
     return "() => {" + JS_HELPERS + body + "}"
+
+
+def today_date_variants():
+    """列表里日期格式未知，生成今天的多种常见写法用于匹配"""
+    now = datetime.now()
+    y, m, d = now.year, now.month, now.day
+    return [
+        f"{y}-{m:02d}-{d:02d}", f"{y}-{m}-{d}",
+        f"{y}/{m:02d}/{d:02d}", f"{y}/{m}/{d}",
+        f"{y}年{m}月{d}日", f"{y}年{m:02d}月{d:02d}日",
+    ]
+
+
+def open_today_record(page):
+    """若随访列表里已有今天的记录，选中并打开它。
+
+    返回 'opened'（已打开表单）/ 'no_record'（没有今天的记录）/ 'open_failed'
+    （找到记录但打不开表单——此时绝不能再去点"增加"，否则会重复新增）。
+    """
+    variants = today_date_variants()
+
+    # 列表异步加载，先等任意记录行出现（列表本来就为空时等满 8 秒再往下走）
+    for _ in range(16):
+        has_row = page.evaluate(js("""
+            return Array.from(document.querySelectorAll('.x-grid3-row')).some(__vis);
+        """))
+        if has_row:
+            break
+        time.sleep(0.5)
+
+    row_found = page.evaluate(js(f"""
+        const variants = {json.dumps(variants)};
+        for (const row of document.querySelectorAll('.x-grid3-row')) {{
+            if (!__vis(row)) continue;
+            const t = row.textContent || '';
+            if (!variants.some(v => t.includes(v))) continue;
+            // ExtJS grid 要发完整鼠标事件序列才选中（单独 click 无效）
+            for (const type of ['mousedown', 'mouseup', 'click']) {{
+                row.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+            }}
+            return true;
+        }}
+        return false;
+    """))
+    if not row_found:
+        return 'no_record'
+
+    print("发现今天已有随访记录，打开该记录（不再点击增加）")
+    time.sleep(1)
+
+    # 打开方式一：点"修改"按钮；方式二：双击该记录行
+    clicked_modify = page.evaluate(js("""
+        for (const btn of document.querySelectorAll('button')) {
+            if (!__vis(btn)) continue;
+            if ((btn.textContent || '').includes('修改')) { btn.click(); return true; }
+        }
+        return false;
+    """))
+    if not clicked_modify:
+        page.evaluate(js(f"""
+            const variants = {json.dumps(variants)};
+            for (const row of document.querySelectorAll('.x-grid3-row')) {{
+                if (!__vis(row)) continue;
+                const t = row.textContent || '';
+                if (!variants.some(v => t.includes(v))) continue;
+                row.dispatchEvent(new MouseEvent('dblclick', {{ bubbles: true, cancelable: true, view: window }}));
+                return true;
+            }}
+            return false;
+        """))
+
+    # 等表单打开
+    for _ in range(16):
+        if page.evaluate(js("return !!__byPrefix('constriction_');")):
+            return 'opened'
+        time.sleep(0.5)
+    return 'open_failed'
+
+
+def create_new_plan(page):
+    """点击增加(F1)，在"增加计划"对话框里选今天日期并确定，打开新问卷表单"""
+    print("6. 点击增加...")
+    add_clicked = page.evaluate(js("""
+        for (const btn of document.querySelectorAll('button')) {
+            if (!(btn.textContent.includes('增加') && btn.textContent.includes('F1'))) continue;
+            if (!__vis(btn)) continue;
+            btn.click();
+            return true;
+        }
+        return false;
+    """))
+    if not add_clicked:
+        fail("未找到可见的'增加(F1)'按钮，问卷列表可能未打开")
+    time.sleep(3)
+
+    # ========== 6.1 & 6.2 自动选择今天日期并确定 ==========
+    # "增加"后弹出 ExtJS "增加计划"对话框（请选择计划日期）：
+    # 直接通过 Ext 组件 API 把日期设为今天，再点击对话框内的"确定"按钮
+    print("6. 自动选择今天日期并确定...")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # 等待"增加计划"对话框出现（最多等 10 秒）
+    dlg_ready = False
+    for _ in range(20):
+        dlg_ready = page.evaluate(js("""
+            for (const w of document.querySelectorAll('.x-window')) {
+                if (!__vis(w)) continue;
+                const titleEl = w.querySelector('.x-window-header-text');
+                if (titleEl && titleEl.textContent.includes('增加计划')) return true;
+            }
+            return false;
+        """))
+        if dlg_ready:
+            break
+        time.sleep(0.5)
+
+    if not dlg_ready:
+        print("警告：未等到'增加计划'对话框")
+    else:
+        dlg_result = page.evaluate("""
+            (todayStr) => {
+                const wins = document.querySelectorAll('.x-window');
+                for (const w of wins) {
+                    const st = getComputedStyle(w);
+                    const r = w.getBoundingClientRect();
+                    if (st.display === 'none' || st.visibility !== 'visible' || r.width === 0) continue;
+                    const titleEl = w.querySelector('.x-window-header-text');
+                    if (!titleEl || !titleEl.textContent.includes('增加计划')) continue;
+
+                    // 6.1 把计划日期设为今天：优先走 ExtJS DateField 组件 API（保证校验和内部状态同步）
+                    const inp = w.querySelector('input.x-form-field');
+                    if (!inp) return 'no_date_input';
+                    const cmp = (window.Ext && Ext.getCmp) ? Ext.getCmp(inp.id) : null;
+                    if (cmp && cmp.setValue) {
+                        cmp.setValue(new Date());
+                    } else {
+                        inp.value = todayStr;
+                        for (const t of ['input', 'change', 'blur']) {
+                            inp.dispatchEvent(new Event(t, { bubbles: true }));
+                        }
+                    }
+
+                    // 6.2 点击对话框内的"确定"按钮
+                    for (const b of w.querySelectorAll('button')) {
+                        if (b.textContent.trim().startsWith('确定')) {
+                            b.click();
+                            return 'ok: ' + inp.value;
+                        }
+                    }
+                    return 'no_confirm_btn';
+                }
+                return 'dialog_not_found';
+            }
+        """, today_str)
+        print(f"6.1/6.2 结果：{dlg_result}")
+        time.sleep(2)
+
+    # 经过增加流程后表单必须已打开，否则后续填写全部落空
+    form_open = page.evaluate(js("return !!__byPrefix('constriction_');"))
+    if not form_open:
+        fail("问卷表单未打开（增加/选择日期未生效），终止填写")
 
 
 def fill_yyjh():
@@ -219,87 +381,18 @@ def fill_yyjh():
                 fail("未找到可见的'医养结合服务'链接（患者可能无健康档案或无该服务）")
             time.sleep(3)
 
-            # ========== 6. 查找并点击增加 ==========
-            print("6. 点击增加...")
-            add_clicked = page.evaluate(js("""
-                for (const btn of document.querySelectorAll('button')) {
-                    if (!(btn.textContent.includes('增加') && btn.textContent.includes('F1'))) continue;
-                    if (!__vis(btn)) continue;
-                    btn.click();
-                    return true;
-                }
-                return false;
-            """))
-            if not add_clicked:
-                fail("未找到可见的'增加(F1)'按钮，问卷列表可能未打开")
-            time.sleep(3)
-
-            # ========== 6.1 & 6.2 自动选择今天日期并确定 ==========
-            # "增加"后弹出 ExtJS "增加计划"对话框（请选择计划日期）：
-            # 直接通过 Ext 组件 API 把日期设为今天，再点击对话框内的"确定"按钮
-            print("6. 自动选择今天日期并确定...")
-            today_str = datetime.now().strftime("%Y-%m-%d")
-
-            # 等待"增加计划"对话框出现（最多等 10 秒）
-            dlg_ready = False
-            for _ in range(20):
-                dlg_ready = page.evaluate(js("""
-                    for (const w of document.querySelectorAll('.x-window')) {
-                        if (!__vis(w)) continue;
-                        const titleEl = w.querySelector('.x-window-header-text');
-                        if (titleEl && titleEl.textContent.includes('增加计划')) return true;
-                    }
-                    return false;
-                """))
-                if dlg_ready:
-                    break
-                time.sleep(0.5)
-
-            if not dlg_ready:
-                print("警告：未等到'增加计划'对话框")
+            # ========== 6. 优先使用今天已有的随访记录，没有才点"增加" ==========
+            # 场景：上次运行已新增今天的随访但页面卡住没填完，直接重跑会重复新增，
+            # 所以先在随访列表里找今天的记录，找到就直接打开它来填
+            print("6. 检查今天是否已有随访记录...")
+            today_status = open_today_record(page)
+            if today_status == 'opened':
+                print("已打开今天的随访记录，直接填写")
+            elif today_status == 'open_failed':
+                fail("找到今天的随访记录但无法打开表单，请人工打开后重跑（不要直接点增加，避免重复记录）")
             else:
-                dlg_result = page.evaluate("""
-                    (todayStr) => {
-                        const wins = document.querySelectorAll('.x-window');
-                        for (const w of wins) {
-                            const st = getComputedStyle(w);
-                            const r = w.getBoundingClientRect();
-                            if (st.display === 'none' || st.visibility !== 'visible' || r.width === 0) continue;
-                            const titleEl = w.querySelector('.x-window-header-text');
-                            if (!titleEl || !titleEl.textContent.includes('增加计划')) continue;
-
-                            // 6.1 把计划日期设为今天：优先走 ExtJS DateField 组件 API（保证校验和内部状态同步）
-                            const inp = w.querySelector('input.x-form-field');
-                            if (!inp) return 'no_date_input';
-                            const cmp = (window.Ext && Ext.getCmp) ? Ext.getCmp(inp.id) : null;
-                            if (cmp && cmp.setValue) {
-                                cmp.setValue(new Date());
-                            } else {
-                                inp.value = todayStr;
-                                for (const t of ['input', 'change', 'blur']) {
-                                    inp.dispatchEvent(new Event(t, { bubbles: true }));
-                                }
-                            }
-
-                            // 6.2 点击对话框内的"确定"按钮
-                            for (const b of w.querySelectorAll('button')) {
-                                if (b.textContent.trim().startsWith('确定')) {
-                                    b.click();
-                                    return 'ok: ' + inp.value;
-                                }
-                            }
-                            return 'no_confirm_btn';
-                        }
-                        return 'dialog_not_found';
-                    }
-                """, today_str)
-                print(f"6.1/6.2 结果：{dlg_result}")
-                time.sleep(2)
-
-            # 经过增加流程后表单必须已打开，否则后续填写全部落空
-            form_open = page.evaluate(js("return !!__byPrefix('constriction_');"))
-            if not form_open:
-                fail("问卷表单未打开（增加/选择日期未生效），终止填写")
+                print("今天暂无随访记录，走新增流程")
+                create_new_plan(page)
 
         # ========== 7. 确认问卷表单可见 ==========
         suffix_id = page.evaluate(js("""

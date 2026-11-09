@@ -844,7 +844,7 @@ def collect():
         if not udrhip:
             if not portal:
                 print("错误：未找到龙岗区全民健康信息平台页面，"
-                      "请先登录 http://172.17.9.215:10041/udaam-ui/login")
+                      "请先登录 https://172.17.9.215:10041/udaam-ui/login")
                 return
             print("4. 从平台导航进入 孕产妇协同管理信息系统...")
             before = {pg.url for ctx in browser.contexts for pg in ctx.pages}

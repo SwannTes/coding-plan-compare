@@ -154,8 +154,8 @@ export const platforms: Platform[] = [
         features: ["28 倍 Agent 额度（Max 的 2 倍）", "4 个 Agent 任务并行", "100 项目 + 50GB 存储"],
       },
     ],
-    highlights: ["Plus 起含 Kimi Code（取消周限额）", "5 档套餐灵活选择", "年付最高立省 ¥3,360", "邀请订阅：双方 100% 拿奖（最高 1 年会员权益）"],
-    models: ["Kimi K3", "Kimi K2.7 Code", "Kimi K2.6"],
+    highlights: ["K3.1 Pro 已上线", "Plus 起含 Kimi Code（取消周限额）", "5 档套餐灵活选择", "年付最高立省 ¥3,360", "邀请订阅：双方 100% 拿奖（最高 1 年会员权益）"],
+    models: ["Kimi K3.1 Pro", "Kimi K3", "Kimi K2.7 Code", "Kimi K2.6"],
   },
   {
     id: "volcengine",

@@ -47,7 +47,7 @@ FAILED_STEPS = []
 
 UDRHIP_MARK = "/udrhip/"                 # 孕产妇协同管理信息系统
 PORTAL_HOST = "172.17.9.215"             # 龙岗区全民健康信息平台
-LOGIN_URL = "http://172.17.9.215:10041/udaam-ui/login"
+LOGIN_URL = "https://172.17.9.215:10041/udaam-ui/login"
 LOGIN_WAIT = 180                         # 等手动登录的最长秒数
 
 DUE_DAYS = 7  # 距截止日期 <= 7 天（含已过期）就登记

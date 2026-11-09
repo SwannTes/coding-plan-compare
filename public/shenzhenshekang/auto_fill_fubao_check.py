@@ -210,7 +210,12 @@ FETCH_RECORDS_JS = "async (rows) => {" + r"""
             for (const k of ["ZSXX", "XBS", "FZJC", "TGJC", "MCYJDESC", "JWS"]) {
                 if (b[k]) parts.push(String(b[k]));
             }
-            out[key] = {text: parts.join("\n"), mcyj: b.MCYJ || "", jy: j.jy_data || []};
+            // sec：质控要单独看主诉/体格检查/末次月经描述；
+            // plan：管理计划（治疗计划/健康指导等）在接口的 gljh 数组里，不在病历正文，
+            // 转诊记录质控要查它（如"治疗计划:转上级医院妇产科产检"）
+            out[key] = {text: parts.join("\n"), mcyj: b.MCYJ || "", jy: j.jy_data || [],
+                        sec: {ZSXX: b.ZSXX || "", TGJC: b.TGJC || "", MCYJDESC: b.MCYJDESC || ""},
+                        plan: (j.gljh || []).map(g => (g.JHLB_text || "") + ":" + (g.GLJH || "")).join("\n")};
         } catch (e) {
             out[key] = {text: "", mcyj: "", jy: [], error: String(e)};
         }
